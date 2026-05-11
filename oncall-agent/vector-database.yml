@@ -57,6 +57,26 @@ services:
     depends_on:
       - "etcd"
       - "minio"
+  elasticsearch:
+    container_name: rag-elasticsearch
+    image: infinilabs/elasticsearch-ik:8.13.4
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - cluster.name=rag-es
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/elasticsearch:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    ports:
+      - "9200:9200"
   # 这是新增的 Attu 服务哦！
   attu:
     container_name: milvus-attu

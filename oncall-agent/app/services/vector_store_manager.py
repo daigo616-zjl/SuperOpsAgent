@@ -1,5 +1,6 @@
 """向量存储管理器 - 封装 Milvus VectorStore 操作"""
 
+import time
 from typing import List
 
 from langchain_core.documents import Document
@@ -60,23 +61,22 @@ class VectorStoreManager:
             logger.error(f"VectorStore 初始化失败: {e}")
             raise
 
-    def add_documents(self, documents: List[Document]) -> List[str]:
+    def add_documents(self, documents: List[Document], ids: List[str]) -> List[str]:
         """
         批量添加文档到向量存储（自动批量向量化）
 
         Args:
             documents: 文档列表
+            ids: 文档 ID 列表
 
         Returns:
             List[str]: 文档 ID 列表
         """
         try:
-            import time
-            import uuid
-            start_time = time.time()
+            if len(documents) != len(ids):
+                raise ValueError("documents 与 ids 数量不一致")
 
-            # 为每个文档生成唯一 id（因为 auto_id=False）
-            ids = [str(uuid.uuid4()) for _ in documents]
+            start_time = time.time()
 
             # LangChain Milvus 的 add_documents 会自动调用 embedding_function
             # 并进行批量处理，性能更好
@@ -117,8 +117,29 @@ class VectorStoreManager:
             return deleted_count
             
         except Exception as e:
-            logger.warning(f"删除旧数据失败 (可能是首次索引): {e}")
+            logger.error(f"删除文件旧数据失败: {e}")
+            raise
+
+    def delete_by_ids(self, ids: List[str]) -> int:
+        """
+        按文档 ID 删除向量数据
+
+        Args:
+            ids: 文档 ID 列表
+
+        Returns:
+            int: 删除的文档数量
+        """
+        if not ids:
             return 0
+
+        collection = milvus_manager.get_collection()
+        quoted_ids = ", ".join([f'"{item}"' for item in ids])
+        expr = f"id in [{quoted_ids}]"
+        result = collection.delete(expr)
+        deleted_count = result.delete_count if hasattr(result, "delete_count") else 0
+        logger.info(f"按 ID 删除向量数据完成, 删除数量: {deleted_count}")
+        return deleted_count
 
     def get_vector_store(self) -> Milvus:
         """

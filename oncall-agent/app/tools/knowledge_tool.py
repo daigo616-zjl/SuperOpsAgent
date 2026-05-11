@@ -7,7 +7,7 @@ from langchain_core.tools import tool
 from loguru import logger
 
 from app.config import config
-from app.services.vector_store_manager import vector_store_manager
+from app.services.hybrid_search_service import hybrid_search_service
 
 
 @tool(response_format="content_and_artifact")
@@ -25,13 +25,7 @@ def retrieve_knowledge(query: str) -> Tuple[str, List[Document]]:
     try:
         logger.info(f"知识检索工具被调用: query='{query}'")
         
-        # 从向量存储中检索相关文档
-        vector_store = vector_store_manager.get_vector_store()
-        retriever = vector_store.as_retriever(
-            search_kwargs={"k": config.rag_top_k}
-        )
-        
-        docs = retriever.invoke(query)
+        docs = hybrid_search_service.search_sync(query, top_k=config.rag_top_k)
         
         if not docs:
             logger.warning("未检索到相关文档")

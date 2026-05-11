@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from app.config import config
+from app.core.es_client import es_client_manager
 from app.core.milvus_client import milvus_manager
 from loguru import logger
 
@@ -42,12 +43,31 @@ async def health_check():
             "message": f"Milvus 检查失败: {str(e)}"
         }
     
+    # 检查 Elasticsearch 连接状态
+    try:
+        es_healthy = es_client_manager.health_check()
+        es_status: str = "connected" if es_healthy else "disconnected"
+        es_message: str = "Elasticsearch 连接正常" if es_healthy else "Elasticsearch 连接异常"
+        health_data["elasticsearch"] = {
+            "status": es_status,
+            "message": es_message
+        }
+    except Exception as e:
+        logger.warning(f"Elasticsearch 健康检查失败: {e}")
+        health_data["elasticsearch"] = {
+            "status": "error",
+            "message": f"Elasticsearch 检查失败: {str(e)}"
+        }
+
     # 判断整体健康状态
     overall_status = "healthy"
     status_code = 200
-    
-    # 如果 Milvus 不可用，服务不可用
-    if health_data["milvus"]["status"] != "connected":
+
+    # 如果数据库不可用，服务不可用
+    if (
+        health_data["milvus"]["status"] != "connected"
+        or health_data["elasticsearch"]["status"] != "connected"
+    ):
         overall_status = "unhealthy"
         status_code = 503
         health_data["error"] = "数据库不可用"

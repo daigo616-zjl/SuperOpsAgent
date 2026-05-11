@@ -1,5 +1,6 @@
 """向量索引服务模块"""
 
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -7,6 +8,7 @@ from typing import Any, Dict, Optional
 from loguru import logger
 
 from app.services.document_splitter_service import document_splitter_service
+from app.services.es_store_manager import es_store_manager
 from app.services.vector_store_manager import vector_store_manager
 
 
@@ -154,14 +156,22 @@ class VectorIndexService:
             # 2. 删除该文件的旧数据（如果存在）
             normalized_path = path.as_posix()
             vector_store_manager.delete_by_source(normalized_path)
+            es_store_manager.delete_by_source(normalized_path)
 
             # 3. 使用新的文档分割器
             documents = document_splitter_service.split_document(content, normalized_path)
             logger.info(f"文档分割完成: {file_path} -> {len(documents)} 个分片")
 
-            # 4. 添加文档到向量存储
+            # 4. 双写文档到向量存储和 Elasticsearch
             if documents:
-                vector_store_manager.add_documents(documents)
+                chunk_ids = [str(uuid.uuid4()) for _ in documents]
+                vector_store_manager.add_documents(documents, chunk_ids)
+                try:
+                    es_store_manager.add_documents(documents, chunk_ids)
+                except Exception:
+                    vector_store_manager.delete_by_ids(chunk_ids)
+                    es_store_manager.delete_by_ids(chunk_ids)
+                    raise
                 logger.info(f"文件索引完成: {file_path}, 共 {len(documents)} 个分片")
             else:
                 logger.warning(f"文件内容为空或无法分割: {file_path}")

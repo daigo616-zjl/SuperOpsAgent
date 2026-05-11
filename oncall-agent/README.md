@@ -9,7 +9,7 @@
 ## ✨ 核心特性
 
 - 🤖 **智能对话** - LangChain 多轮对话 + 流式输出
-- 📚 **RAG 问答** - 向量检索增强，支持文档上传、自动建立向量索引、自动更新知识库
+- 📚 **RAG 问答** - Milvus 向量检索 + Elasticsearch BM25 双路召回，支持文档上传、自动建立索引、自动更新知识库
 - 🔧 **AIOps 诊断** - Plan-Execute-Replan 自动故障诊断和根因分析
 - 🌐 **Web 界面** - 现代化 UI，支持多种对话模式：快速问答/流式对话
 - 🔌 **MCP 集成** - 日志查询和监控数据工具接入
@@ -18,7 +18,7 @@
 
 - **框架**: FastAPI + LangChain + LangGraph
 - **LLM**: 阿里云 DashScope (通义千问)
-- **向量库**: Milvus
+- **检索层**: Milvus + Elasticsearch
 - **工具协议**: MCP (Model Context Protocol)
 
 ## 🚀 快速开始
@@ -90,11 +90,11 @@ notepad .env
 # 4. 启动 Docker Desktop
 # 确保 Docker Desktop 已安装并正在运行
 
-# 5. 启动 Milvus 向量数据库（Docker Compose）
+# 5. 启动 Milvus + Elasticsearch 检索基础设施（Docker Compose）
 docker compose -f vector-database.yml up -d
 
-# 6. 等待 Milvus 启动完成（约 5-10 秒）
-timeout /t 10
+# 6. 等待 Milvus 和 Elasticsearch 启动完成（首次启动可能需要更久）
+timeout /t 20
 
 # 7. 启动 MCP 服务
 # 启动 CLS 日志查询服务（新开一个 PowerShell 窗口）
@@ -128,6 +128,7 @@ python -c "import requests, os, time; [requests.post('http://localhost:9900/api/
 ### 访问服务
 - **Web 界面**: http://localhost:9900
 - **API 文档**: http://localhost:9900/docs
+- **Elasticsearch**: http://localhost:9200
 
 ## 📡 API 接口
 

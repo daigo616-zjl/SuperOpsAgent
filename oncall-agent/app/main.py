@@ -13,6 +13,7 @@ import os
 from app.config import config
 from loguru import logger
 from app.api import chat, health, file, aiops
+from app.core.es_client import es_client_manager
 from app.core.milvus_client import milvus_manager
 
 
@@ -30,12 +31,18 @@ async def lifespan(app: FastAPI):
     logger.info("🔌 正在连接 Milvus...")
     milvus_manager.connect()
     logger.info("✅ Milvus 连接成功")
-    
+
+    logger.info("🔌 正在连接 Elasticsearch...")
+    await es_client_manager.connect()
+    logger.info("✅ Elasticsearch 连接成功")
+
     logger.info("=" * 60)
-    
+
     yield
-    
+
     # 关闭时执行
+    logger.info("🔌 正在关闭 Elasticsearch 连接...")
+    await es_client_manager.close()
     logger.info("🔌 正在关闭 Milvus 连接...")
     milvus_manager.close()
     logger.info(f"👋 {config.app_name} 关闭")
@@ -59,7 +66,7 @@ app.add_middleware(
 )
 
 # 注册路由
-app.include_router(health.router, tags=["健康检查"])
+app.include_router(health.router, prefix="/api", tags=["健康检查"])
 app.include_router(chat.router, prefix="/api", tags=["对话"])
 app.include_router(file.router, prefix="/api", tags=["文件管理"])
 app.include_router(aiops.router, prefix="/api", tags=["AIOps智能运维"])
