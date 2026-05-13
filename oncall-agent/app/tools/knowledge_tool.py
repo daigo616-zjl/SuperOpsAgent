@@ -3,15 +3,20 @@
 from typing import List, Tuple
 
 from langchain_core.documents import Document
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from loguru import logger
 
 from app.config import config
 from app.services.hybrid_search_service import hybrid_search_service
+from app.services.query_rewrite_service import query_rewrite_service
 
 
 @tool(response_format="content_and_artifact")
-def retrieve_knowledge(query: str) -> Tuple[str, List[Document]]:
+def retrieve_knowledge(
+    query: str,
+    runtime_config: RunnableConfig | None = None,
+) -> Tuple[str, List[Document]]:
     """从知识库中检索相关信息来回答问题
     
     当用户的问题涉及专业知识、文档内容或需要参考资料时，使用此工具。
@@ -23,10 +28,18 @@ def retrieve_knowledge(query: str) -> Tuple[str, List[Document]]:
         Tuple[str, List[Document]]: (格式化的上下文文本, 原始文档列表)
     """
     try:
-        logger.info(f"知识检索工具被调用: query='{query}'")
-        
-        docs = hybrid_search_service.search_sync(query, top_k=config.rag_top_k)
-        
+        logger.info(f"知识检索工具被调用: original_query='{query}'")
+
+        session_id = None
+        if runtime_config:
+            session_id = runtime_config.get("configurable", {}).get("thread_id")
+        rewritten_query = query_rewrite_service.rewrite_sync(query, session_id)
+        logger.info(
+            f"知识检索开始: original_query='{query}', retrieval_query='{rewritten_query}'"
+        )
+
+        docs = hybrid_search_service.search_sync(rewritten_query, top_k=config.rag_top_k)
+
         if not docs:
             logger.warning("未检索到相关文档")
             return "没有找到相关信息。", []
@@ -34,7 +47,9 @@ def retrieve_knowledge(query: str) -> Tuple[str, List[Document]]:
         # 格式化文档为上下文
         context = format_docs(docs)
         
-        logger.info(f"检索到 {len(docs)} 个相关文档")
+        logger.info(
+            f"检索到 {len(docs)} 个相关文档: original_query='{query}', retrieval_query='{rewritten_query}'"
+        )
         return context, docs
         
     except Exception as e:

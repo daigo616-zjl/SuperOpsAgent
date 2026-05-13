@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     rag_model: str = "qwen-max"  # 使用快速响应模型，不带扩展思考
     rag_recall_size: int = 20
     rag_rrf_k: int = 60
+    rag_query_rewrite_enabled: bool = True
+    rag_query_rewrite_model: str = ""
+    rag_query_rewrite_history_rounds: int = 3
+    rag_query_rewrite_timeout: int = 5
+    rag_query_rewrite_max_length: int = 200
 
     # Elasticsearch 配置
     es_host: str = "localhost"
