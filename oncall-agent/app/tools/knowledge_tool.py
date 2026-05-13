@@ -10,6 +10,7 @@ from loguru import logger
 from app.config import config
 from app.services.hybrid_search_service import hybrid_search_service
 from app.services.query_rewrite_service import query_rewrite_service
+from app.services.rerank_service import rerank_service
 
 
 @tool(response_format="content_and_artifact")
@@ -38,12 +39,24 @@ def retrieve_knowledge(
             f"知识检索开始: original_query='{query}', retrieval_query='{rewritten_query}'"
         )
 
-        docs = hybrid_search_service.search_sync(rewritten_query, top_k=config.rag_top_k)
+        candidates = hybrid_search_service.search_sync(
+            rewritten_query,
+            top_k=config.rag_recall_size,
+        )
 
-        if not docs:
+        if not candidates:
             logger.warning("未检索到相关文档")
             return "没有找到相关信息。", []
-        
+
+        if config.rag_rerank_enabled:
+            docs = rerank_service.rerank(
+                rewritten_query,
+                candidates,
+                top_k=config.rag_top_k,
+            )
+        else:
+            docs = candidates[: config.rag_top_k]
+
         # 格式化文档为上下文
         context = format_docs(docs)
         

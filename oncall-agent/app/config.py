@@ -35,9 +35,12 @@ class Settings(BaseSettings):
     milvus_timeout: int = 10000  # 毫秒
 
     # RAG 配置
-    rag_top_k: int = 3
+    rag_top_k: int = 5
     rag_model: str = "qwen-max"  # 使用快速响应模型，不带扩展思考
     rag_recall_size: int = 20
+    rag_rerank_enabled: bool = True
+    rag_rerank_model: str = "BAAI/bge-reranker-base"
+    rag_rerank_timeout: int = 10
     rag_rrf_k: int = 60
     rag_query_rewrite_enabled: bool = True
     rag_query_rewrite_model: str = ""
