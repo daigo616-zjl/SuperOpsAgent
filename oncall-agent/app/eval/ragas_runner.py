@@ -7,7 +7,8 @@ from typing import Any
 from datasets import Dataset
 from ragas import evaluate
 from ragas.llms import LangchainLLMWrapper
-from ragas.metrics import answer_correctness, answer_relevancy, faithfulness
+from ragas.metrics.collections import AnswerCorrectness, AnswerRelevancy
+from ragas.metrics import faithfulness
 
 from app.config import config
 from app.core.llm_factory import llm_factory
@@ -56,31 +57,13 @@ def _build_evaluator_llm() -> LangchainLLMWrapper:
     return LangchainLLMWrapper(llm)
 
 
-def _with_llm(metric: Any, evaluator_llm: LangchainLLMWrapper) -> Any:
-    if callable(metric):
-        try:
-            return metric(llm=evaluator_llm)
-        except TypeError:
-            try:
-                return metric()
-            except TypeError:
-                return metric
-    return metric
-
-
 def _build_metrics() -> list[Any]:
     evaluator_llm = _build_evaluator_llm()
-    metrics: list[Any] = [
-        _with_llm(faithfulness, evaluator_llm),
-        _with_llm(answer_relevancy, evaluator_llm),
+    return [
+        faithfulness,
+        AnswerRelevancy(llm=evaluator_llm),
+        AnswerCorrectness(llm=evaluator_llm),
     ]
-
-    try:
-        metrics.append(_with_llm(answer_correctness, evaluator_llm))
-    except Exception:
-        pass
-
-    return metrics
 
 
 def _build_dataset_payload(details: list[EvalDetail]) -> Dataset:
