@@ -292,6 +292,25 @@ curl -X POST "http://localhost:9900/api/aiops" \
 4. 输出诊断报告 → 根因分析 + 运维建议
 ```
 
+## 🧪 离线 RAGAS 评测
+
+可以使用离线脚本读取 JSONL 数据集，批量生成回答并输出 JSON 评测报告。
+
+- 输入：JSONL 数据集
+- 输出：`eval/reports/` 下的 JSON 报告
+
+示例命令：
+
+```bash
+python scripts/run_ragas_eval.py --dataset eval/fixtures/sample_ragas_dataset.jsonl
+```
+
+数据集单行示例：
+
+```json
+{"id":"case-001","question":"CPU 持续升高时应该先看什么指标？","ground_truth":"应先查看 CPU 使用率趋势、负载、异常进程以及相关监控指标。"}
+```
+
 ## 📝 开发指南
 
 ### 常用命令

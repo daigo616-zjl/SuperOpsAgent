@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     rag_query_rewrite_timeout: int = 5
     rag_query_rewrite_max_length: int = 200
 
+    # 离线评测配置
+    eval_model: str = "qwen-max"
+    eval_output_dir: str = "eval/reports"
+
     # Elasticsearch 配置
     es_host: str = "localhost"
     es_port: int = 9200
