@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(superpowers:using-superpowers)",
+      "Skill(superpowers:brainstorming)",
+      "Skill(superpowers:writing-plans)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__query-docs",
+      "Skill(superpowers:executing-plans)",
+      "Skill(superpowers:using-git-worktrees)",
+      "Bash(git -C ../frontend status --short)",
+      "Bash(git -C ../frontend branch --show-current)"
+    ]
+  }
+}

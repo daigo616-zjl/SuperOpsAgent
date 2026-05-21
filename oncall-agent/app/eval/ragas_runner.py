@@ -3,16 +3,17 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from statistics import mean
 from typing import Any
+from uuid import uuid4
 
 from datasets import Dataset
 from ragas import evaluate
 from ragas.llms import LangchainLLMWrapper
-from ragas.metrics.collections import AnswerCorrectness, AnswerRelevancy
 from ragas.metrics import faithfulness
+from ragas.metrics.collections import AnswerCorrectness, AnswerRelevancy, ContextRelevance
 
 from app.config import config
 from app.core.llm_factory import llm_factory
-from app.eval.answer_generator import EvalAnswerGenerationError, generate_answer
+from app.eval.answer_generator import EvalAnswerGenerationError, generate_answer_with_context
 from app.eval.dataset import EvalSample
 
 
@@ -22,6 +23,7 @@ class EvalDetail:
     question: str
     ground_truth: str
     answer: str | None = None
+    retrieved_contexts: list[str] = field(default_factory=list)
     scores: dict[str, float | None] = field(default_factory=dict)
     error: str | None = None
 
@@ -63,6 +65,7 @@ def _build_metrics() -> list[Any]:
         faithfulness,
         AnswerRelevancy(llm=evaluator_llm),
         AnswerCorrectness(llm=evaluator_llm),
+        ContextRelevance(llm=evaluator_llm),
     ]
 
 
@@ -73,6 +76,7 @@ def _build_dataset_payload(details: list[EvalDetail]) -> Dataset:
             "question": [detail.question for detail in successful_details],
             "answer": [detail.answer for detail in successful_details],
             "ground_truth": [detail.ground_truth for detail in successful_details],
+            "retrieved_contexts": [detail.retrieved_contexts for detail in successful_details],
         }
     )
 
@@ -109,7 +113,12 @@ async def run_ragas_evaluation(samples: list[EvalSample]) -> EvalReport:
         details.append(detail)
 
         try:
-            detail.answer = await generate_answer(sample.question, session_id=f"eval-{sample.id}")
+            result = await generate_answer_with_context(
+                sample.question,
+                session_id=f"eval-{sample.id}-{uuid4().hex}",
+            )
+            detail.answer = result.answer
+            detail.retrieved_contexts = result.retrieved_contexts
         except EvalAnswerGenerationError as exc:
             detail.error = str(exc)
             errors.append({"id": sample.id, "error": str(exc)})

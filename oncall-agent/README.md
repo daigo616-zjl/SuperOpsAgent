@@ -298,12 +298,15 @@ curl -X POST "http://localhost:9900/api/aiops" \
 
 - 输入：JSONL 数据集
 - 输出：`eval/reports/` 下的 JSON 报告
+- 报告会记录每条样本的最终 answer、真实 retrieved_contexts，以及包括 `context_relevance` 在内的评分结果
 
 示例命令：
 
 ```bash
 python scripts/run_ragas_eval.py --dataset eval/fixtures/sample_ragas_dataset.jsonl
 ```
+
+评测过程中仍沿用真实回答链路，不额外重复检索；因此报告里的 `retrieved_contexts` 就是该次回答实际使用的上下文。
 
 数据集单行示例：
 

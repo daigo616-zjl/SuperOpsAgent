@@ -4,6 +4,7 @@
 支持真正的流式输出和更好的模型适配。
 """
 
+from dataclasses import dataclass
 from typing import Annotated, Any, AsyncGenerator, Dict, Sequence
 
 from langchain.agents import create_agent
@@ -22,6 +23,7 @@ from langchain_qwq import ChatQwen
 from app.config import config
 from app.tools import get_current_time, retrieve_knowledge
 from app.agent.mcp_client import get_mcp_client_with_retry
+from app.tools.knowledge_tool import clear_captured_retrieval_docs, pop_captured_retrieval_docs
 
 # 阿里千问大模型和langchain集成参考： https://docs.langchain.com/oss/python/integrations/chat/qwen
 # 注意：需要配置环境变量 DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1 否则默认访问的是新加坡站点
@@ -71,6 +73,12 @@ def trim_messages_middleware(state: AgentState) -> dict[str, Any] | None:
             *new_messages
         ]
     }
+
+
+@dataclass(slots=True)
+class RagQueryWithContextResult:
+    answer: str
+    retrieved_contexts: list[str]
 
 
 class RagAgentService:
@@ -175,31 +183,35 @@ class RagAgentService:
         question: str,
         session_id: str,
     ) -> str:
+        result = await self.query_with_context(question=question, session_id=session_id)
+        return result.answer
+
+    async def query_with_context(
+        self,
+        question: str,
+        session_id: str,
+    ) -> RagQueryWithContextResult:
         """
-        非流式处理用户问题（一次性返回完整答案）
+        非流式处理用户问题（一次性返回完整答案与真实检索上下文）
 
         Args:
             question: 用户问题
             session_id: 会话ID（作为 thread_id）
 
         Returns:
-            str: 完整答案
+            RagQueryWithContextResult: 完整答案与真实检索上下文
         """
+        clear_captured_retrieval_docs(session_id)
         try:
             await self._initialize_agent()
 
             logger.info(f"[会话 {session_id}] RAG Agent 收到查询（非流式）: {question}")
 
-            # 构建消息列表（系统提示 + 用户问题）
             messages = [
                 SystemMessage(content=self.system_prompt),
                 HumanMessage(content=question)
             ]
-
-            # 构建 Agent 输入
             agent_input = {"messages": messages}
-
-            # 配置 thread_id（用于会话持久化）
             config_dict = {
                 "configurable": {
                     "thread_id": session_id
@@ -211,26 +223,34 @@ class RagAgentService:
                 config=config_dict,
             )
 
-            # 提取最终答案
             messages_result = result.get("messages", [])
             if messages_result:
                 last_message = messages_result[-1]
                 answer = last_message.content if hasattr(last_message, 'content') else str(last_message)
 
-                # 记录工具调用
                 if hasattr(last_message, "tool_calls") and last_message.tool_calls:
                     tool_names = [tc.get("name", "unknown") for tc in last_message.tool_calls]
                     logger.info(f"[会话 {session_id}] Agent 调用了工具: {tool_names}")
 
                 logger.info(f"[会话 {session_id}] RAG Agent 查询完成（非流式）")
-                return answer
+                docs = pop_captured_retrieval_docs(session_id)
+                return RagQueryWithContextResult(
+                    answer=answer,
+                    retrieved_contexts=[doc.page_content for doc in docs],
+                )
 
             logger.warning(f"[会话 {session_id}] Agent 返回结果为空")
-            return ""
+            docs = pop_captured_retrieval_docs(session_id)
+            return RagQueryWithContextResult(
+                answer="",
+                retrieved_contexts=[doc.page_content for doc in docs],
+            )
 
         except Exception as e:
             logger.error(f"[会话 {session_id}] RAG Agent 查询失败（非流式）: {e}")
             raise
+        finally:
+            clear_captured_retrieval_docs(session_id)
 
     async def query_stream(
         self,

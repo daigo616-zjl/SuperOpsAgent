@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """知识检索工具 - 从向量数据库中检索相关信息"""
 
 from typing import List, Tuple
@@ -7,10 +9,24 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from loguru import logger
 
+_CAPTURED_RETRIEVAL_DOCS: dict[str, list[Document]] = {}
+
 from app.config import config
 from app.services.hybrid_search_service import hybrid_search_service
 from app.services.query_rewrite_service import query_rewrite_service
 from app.services.rerank_service import rerank_service
+
+
+def set_captured_retrieval_docs(session_id: str, docs: list[Document]) -> None:
+    _CAPTURED_RETRIEVAL_DOCS[session_id] = docs
+
+
+def pop_captured_retrieval_docs(session_id: str) -> list[Document]:
+    return _CAPTURED_RETRIEVAL_DOCS.pop(session_id, [])
+
+
+def clear_captured_retrieval_docs(session_id: str) -> None:
+    _CAPTURED_RETRIEVAL_DOCS.pop(session_id, None)
 
 
 @tool(response_format="content_and_artifact")
@@ -56,6 +72,9 @@ def retrieve_knowledge(
             )
         else:
             docs = candidates[: config.rag_top_k]
+
+        if session_id:
+            set_captured_retrieval_docs(session_id, docs)
 
         # 格式化文档为上下文
         context = format_docs(docs)
