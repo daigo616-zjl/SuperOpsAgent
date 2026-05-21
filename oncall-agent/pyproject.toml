@@ -32,7 +32,12 @@ dependencies = [
     "langchain-qwq>=0.3.4",
     "elasticsearch>=8.13,<9",
     "sentence-transformers>=3.0.0",
+    "datasets>=2.18.0",
+    "ragas==0.4.3",
 ]
+
+[project.scripts]
+run-ragas-eval = "app.eval.cli:main"
 
 [project.optional-dependencies]
 dev = [
