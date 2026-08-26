@@ -179,7 +179,12 @@ API Key 或其他凭据。
 | `RAG_MODEL` | `qwen-max` | RAG 回答模型 |
 | `RAG_QUERY_REWRITE_MODEL` | 空 | 空值时复用 RAG 主模型 |
 | `EVAL_MODEL` | `qwen-max` | 离线评测模型 |
-| `EVAL_METRIC_TIMEOUT` | `90` | 单项 Ragas 指标超时秒数 |
+| `EVAL_METRIC_TIMEOUT` | `90` | 普通指标和单次评测 HTTP 请求超时秒数 |
+| `EVAL_FAITHFULNESS_TIMEOUT` | `300` | Faithfulness 整项评分超时秒数 |
+| `EVAL_FAITHFULNESS_STATEMENT_BATCH_SIZE` | `10` | Faithfulness 单次 NLI 判定的陈述数，避免长回答产生过大的结构化输出 |
+| `EVAL_ANSWER_CORRECTNESS_TIMEOUT` | `240` | Answer Correctness 整项评分超时秒数 |
+| `EVAL_METRIC_MAX_CONCURRENCY` | `2` | 同时运行的 Ragas 指标数 |
+| `EVAL_CLIENT_MAX_RETRIES` | `3` | 评测客户端瞬时失败重试次数 |
 
 `DASHSCOPE_API_BASE` 必须与 Key 的地域一致。默认值是北京地域：
 

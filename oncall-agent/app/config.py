@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     eval_model: str = "qwen-max"
     eval_output_dir: str = "eval/reports"
     eval_metric_timeout: int = 90
+    eval_faithfulness_timeout: int = 300
+    eval_faithfulness_statement_batch_size: int = 10
+    eval_answer_correctness_timeout: int = 240
+    eval_metric_max_concurrency: int = 2
+    eval_client_max_retries: int = 3
 
     # Elasticsearch 配置
     es_scheme: str = "http"
