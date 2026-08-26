@@ -15,6 +15,7 @@ from loguru import logger
 from app.api import chat, health, file, aiops
 from app.core.es_client import es_client_manager
 from app.core.milvus_client import milvus_manager
+from app.services.rerank_service import rerank_service
 
 
 @asynccontextmanager
@@ -35,6 +36,9 @@ async def lifespan(app: FastAPI):
     logger.info("🔌 正在连接 Elasticsearch...")
     await es_client_manager.connect()
     logger.info("✅ Elasticsearch 连接成功")
+
+    logger.info("🔥 正在预热 Rerank 模型...")
+    await rerank_service.warmup_async()
 
     logger.info("=" * 60)
 

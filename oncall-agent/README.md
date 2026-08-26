@@ -216,6 +216,8 @@ DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 | `RAG_RECALL_SIZE` | `20` | 每路初始召回数 |
 | `RAG_RERANK_ENABLED` | `true` | 是否启用重排序 |
 | `RAG_RERANK_MODEL` | `BAAI/bge-reranker-base` | 本地重排序模型 |
+| `RAG_RERANK_WARMUP_ENABLED` | `true` | 启动 API 或离线评测时是否提前预热重排模型 |
+| `RAG_RERANK_WARMUP_TIMEOUT` | `120` | 重排模型预热超时秒数 |
 | `RAG_QUERY_REWRITE_ENABLED` | `true` | 是否启用查询改写 |
 | `MCP_CLS_URL` | `http://localhost:8003/mcp` | CLS MCP 地址 |
 | `MCP_MONITOR_URL` | `http://localhost:8004/mcp` | Monitor MCP 地址 |

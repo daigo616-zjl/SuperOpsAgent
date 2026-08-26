@@ -30,6 +30,12 @@ def test_evaluation_runtime_connects_and_closes_stores(monkeypatch) -> None:
     monkeypatch.setattr(runtime_module.es_client_manager, "connect", es_connect)
     monkeypatch.setattr(runtime_module.es_client_manager, "close", es_close)
 
+    async def rerank_warmup() -> bool:
+        events.append("rerank_warmup")
+        return True
+
+    monkeypatch.setattr(runtime_module.rerank_service, "warmup_async", rerank_warmup)
+
     async def run() -> None:
         async with evaluation_runtime():
             events.append("evaluate")
@@ -39,6 +45,7 @@ def test_evaluation_runtime_connects_and_closes_stores(monkeypatch) -> None:
     assert events == [
         "milvus_connect",
         "es_connect",
+        "rerank_warmup",
         "evaluate",
         "es_close",
         "milvus_close",

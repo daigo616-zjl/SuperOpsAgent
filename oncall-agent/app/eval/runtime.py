@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from app.core.es_client import es_client_manager
 from app.core.milvus_client import milvus_manager
+from app.services.rerank_service import rerank_service
 
 
 class EvaluationRuntimeError(RuntimeError):
@@ -32,6 +33,7 @@ async def evaluation_runtime() -> AsyncIterator[None]:
         ) from exc
 
     try:
+        await rerank_service.warmup_async()
         yield
     finally:
         await es_client_manager.close()

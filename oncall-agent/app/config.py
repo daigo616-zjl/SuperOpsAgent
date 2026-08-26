@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     rag_rerank_enabled: bool = True
     rag_rerank_model: str = "BAAI/bge-reranker-base"
     rag_rerank_timeout: int = 10
+    rag_rerank_warmup_enabled: bool = True
+    rag_rerank_warmup_timeout: int = 120
     rag_rrf_k: int = 60
     rag_query_rewrite_enabled: bool = True
     rag_query_rewrite_model: str = ""
