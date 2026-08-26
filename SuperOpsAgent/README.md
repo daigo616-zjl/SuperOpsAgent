@@ -56,12 +56,6 @@ flowchart LR
 
 ## 快速开始：Windows
 
-仓库中的应用位于 `oncall-agent` 子目录：
-
-```powershell
-git clone https://github.com/daigo616-zjl/oncall-agent.git
-cd oncall-agent\oncall-agent
-```
 
 创建本地配置：
 
