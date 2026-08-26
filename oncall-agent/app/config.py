@@ -27,6 +27,7 @@ class Settings(BaseSettings):
 
     # DashScope 配置
     dashscope_api_key: str = ""  # 默认空字符串，实际使用需从环境变量加载
+    dashscope_api_base: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     dashscope_model: str = "qwen-max"
     dashscope_embedding_model: str = "text-embedding-v4"  # v4 支持多种维度（默认 1024）
 
@@ -52,6 +53,7 @@ class Settings(BaseSettings):
     # 离线评测配置
     eval_model: str = "qwen-max"
     eval_output_dir: str = "eval/reports"
+    eval_metric_timeout: int = 90
 
     # Elasticsearch 配置
     es_scheme: str = "http"

@@ -7,6 +7,7 @@ from pathlib import Path
 from app.eval.dataset import load_eval_dataset
 from app.eval.ragas_runner import run_ragas_evaluation
 from app.eval.report_writer import build_report_path, write_report
+from app.eval.runtime import evaluation_runtime
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -18,9 +19,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def _run(dataset_path: str, output_path: str | None) -> Path:
     samples = load_eval_dataset(dataset_path)
-    report = await run_ragas_evaluation(samples)
-    report_path = Path(output_path) if output_path else build_report_path(dataset_path)
-    write_report(report.to_dict(), report_path)
+    async with evaluation_runtime():
+        report = await run_ragas_evaluation(samples)
+        report_path = Path(output_path) if output_path else build_report_path(dataset_path)
+        write_report(report.to_dict(), report_path)
 
     print(f"dataset path: {dataset_path}")
     print(f"total: {report.summary.total}")

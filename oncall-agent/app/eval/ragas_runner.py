@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable
 from dataclasses import asdict, dataclass, field
 from statistics import mean
 from typing import Any
 from uuid import uuid4
 
-from datasets import Dataset
-from ragas import evaluate
-from ragas.llms import LangchainLLMWrapper
-from ragas.metrics import faithfulness
-from ragas.metrics.collections import AnswerCorrectness, AnswerRelevancy, ContextRelevance
+from loguru import logger
+from openai import AsyncOpenAI
+from ragas.embeddings.base import embedding_factory
+from ragas.llms import llm_factory as ragas_llm_factory
+from ragas.metrics.collections import (
+    AnswerCorrectness,
+    AnswerRelevancy,
+    ContextRelevance,
+    Faithfulness,
+)
 
 from app.config import config
-from app.core.llm_factory import llm_factory
 from app.eval.answer_generator import EvalAnswerGenerationError, generate_answer_with_context
 from app.eval.dataset import EvalSample
 
@@ -50,54 +56,132 @@ class EvalReport:
         }
 
 
-def _build_evaluator_llm() -> LangchainLLMWrapper:
-    llm = llm_factory.create_chat_model(
+def _build_evaluator_client() -> AsyncOpenAI:
+    return AsyncOpenAI(
+        api_key=config.dashscope_api_key,
+        base_url=config.dashscope_api_base,
+        timeout=config.eval_metric_timeout,
+        max_retries=1,
+    )
+
+
+def _build_evaluator_llm(client: AsyncOpenAI) -> Any:
+    return ragas_llm_factory(
         model=config.eval_model,
+        provider="openai",
+        client=client,
         temperature=0.0,
-        streaming=False,
+        max_tokens=4096,
     )
-    return LangchainLLMWrapper(llm)
 
 
-def _build_metrics() -> list[Any]:
-    evaluator_llm = _build_evaluator_llm()
-    return [
-        faithfulness,
-        AnswerRelevancy(llm=evaluator_llm),
-        AnswerCorrectness(llm=evaluator_llm),
-        ContextRelevance(llm=evaluator_llm),
+def _build_metrics() -> tuple[AsyncOpenAI, list[Any]]:
+    client = _build_evaluator_client()
+    evaluator_llm = _build_evaluator_llm(client)
+    evaluator_embeddings = embedding_factory(
+        provider="openai",
+        model=config.dashscope_embedding_model,
+        client=client,
+    )
+    return (
+        client,
+        [
+            Faithfulness(llm=evaluator_llm),
+            AnswerRelevancy(llm=evaluator_llm, embeddings=evaluator_embeddings),
+            AnswerCorrectness(llm=evaluator_llm, embeddings=evaluator_embeddings),
+            ContextRelevance(llm=evaluator_llm),
+        ],
+    )
+
+
+async def _score_details(
+    details: list[EvalDetail],
+) -> tuple[dict[str, float | None], list[dict[str, str]]]:
+    client, metrics = _build_metrics()
+    faithfulness, answer_relevancy, answer_correctness, context_relevance = metrics
+    errors: list[dict[str, str]] = []
+
+    async def score_metric(
+        detail: EvalDetail,
+        name: str,
+        operation: Awaitable[Any],
+    ) -> float | None:
+        try:
+            result = await asyncio.wait_for(operation, timeout=config.eval_metric_timeout)
+            return float(result.value) if isinstance(result.value, (int, float)) else None
+        except Exception as exc:
+            message = f"{name} 评分失败: {exc}"
+            logger.error(f"评测样本 {detail.id}: {message}")
+            errors.append({"id": detail.id, "metric": name, "error": str(exc)})
+            return None
+
+    try:
+        for detail in details:
+            if not detail.answer or detail.error:
+                continue
+
+            operations = [
+                (
+                    "answer_relevancy",
+                    answer_relevancy.ascore(
+                        user_input=detail.question,
+                        response=detail.answer,
+                    ),
+                ),
+                (
+                    "answer_correctness",
+                    answer_correctness.ascore(
+                        user_input=detail.question,
+                        response=detail.answer,
+                        reference=detail.ground_truth,
+                    ),
+                ),
+            ]
+            if detail.retrieved_contexts:
+                operations.extend(
+                    [
+                        (
+                            "faithfulness",
+                            faithfulness.ascore(
+                                user_input=detail.question,
+                                response=detail.answer,
+                                retrieved_contexts=detail.retrieved_contexts,
+                            ),
+                        ),
+                        (
+                            "context_relevance",
+                            context_relevance.ascore(
+                                user_input=detail.question,
+                                retrieved_contexts=detail.retrieved_contexts,
+                            ),
+                        ),
+                    ]
+                )
+
+            values = await asyncio.gather(
+                *[score_metric(detail, name, operation) for name, operation in operations]
+            )
+            detail.scores.update(
+                {name: value for (name, _), value in zip(operations, values, strict=True)}
+            )
+    finally:
+        await client.close()
+
+    metric_names = [
+        "faithfulness",
+        "answer_relevancy",
+        "answer_correctness",
+        "context_relevance",
     ]
-
-
-def _build_dataset_payload(details: list[EvalDetail]) -> Dataset:
-    successful_details = [detail for detail in details if detail.answer and not detail.error]
-    return Dataset.from_dict(
-        {
-            "question": [detail.question for detail in successful_details],
-            "answer": [detail.answer for detail in successful_details],
-            "ground_truth": [detail.ground_truth for detail in successful_details],
-            "retrieved_contexts": [detail.retrieved_contexts for detail in successful_details],
-        }
-    )
-
-
-def _extract_metric_scores(result: Any, successful_details: list[EvalDetail]) -> dict[str, float | None]:
-    scores = getattr(result, "scores", None) or []
-    if not scores:
-        return {}
-
-    metric_names = list(scores[0].keys())
-    detail_scores: dict[str, list[float | None]] = {name: [] for name in metric_names}
-
-    for detail, row in zip(successful_details, scores, strict=False):
-        detail.scores = {name: row.get(name) for name in metric_names}
-        for name in metric_names:
-            detail_scores[name].append(row.get(name))
-
-    return {
-        name: mean([value for value in values if isinstance(value, (int, float))]) if any(isinstance(value, (int, float)) for value in values) else None
-        for name, values in detail_scores.items()
-    }
+    summary: dict[str, float | None] = {}
+    for name in metric_names:
+        values = [
+            value
+            for detail in details
+            if isinstance((value := detail.scores.get(name)), (int, float))
+        ]
+        summary[name] = mean(values) if values else None
+    return summary, errors
 
 
 async def run_ragas_evaluation(samples: list[EvalSample]) -> EvalReport:
@@ -127,9 +211,8 @@ async def run_ragas_evaluation(samples: list[EvalSample]) -> EvalReport:
     if not successful_details:
         raise ValueError("All evaluation samples failed to generate answers")
 
-    dataset = _build_dataset_payload(details)
-    result = evaluate(dataset=dataset, metrics=_build_metrics())
-    metric_summary = _extract_metric_scores(result, successful_details)
+    metric_summary, metric_errors = await _score_details(successful_details)
+    errors.extend(metric_errors)
 
     summary = EvalSummary(
         total=len(samples),

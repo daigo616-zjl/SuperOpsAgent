@@ -21,6 +21,8 @@ htmlcov/
 # Runtime output and local service data.
 data/
 logs/
+uploads/
+eval/reports/*.json
 *.log
 *.pid
 volumes/
