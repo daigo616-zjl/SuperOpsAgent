@@ -1,6 +1,6 @@
-# SuperBizAgent
+# SuperOpsAgent
 
-SuperBizAgent 是一个面向 On-Call 场景的智能运维助手。项目使用 FastAPI 提供 Web
+SuperOpsAgent 是一个面向 On-Call 场景的智能运维助手。项目使用 FastAPI 提供 Web
 与 API 服务，通过 LangGraph 编排 RAG 问答和 AIOps 诊断流程，并结合 Milvus Lite、
 Elasticsearch、DashScope 和 MCP 完成知识检索、告警分析与诊断建议生成。
 
