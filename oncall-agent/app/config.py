@@ -3,7 +3,8 @@
 使用 Pydantic Settings 实现类型安全的配置管理
 """
 
-from typing import Dict, Any
+from typing import Any
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,16 +23,16 @@ class Settings(BaseSettings):
     app_version: str = "1.0.0"
     debug: bool = False
     host: str = "0.0.0.0"
-    port: int = 9900
+    port: int = 12000
 
     # DashScope 配置
     dashscope_api_key: str = ""  # 默认空字符串，实际使用需从环境变量加载
     dashscope_model: str = "qwen-max"
     dashscope_embedding_model: str = "text-embedding-v4"  # v4 支持多种维度（默认 1024）
 
-    # Milvus 配置
-    milvus_host: str = "localhost"
-    milvus_port: int = 19530
+    # Milvus Lite 配置
+    milvus_lite_path: str = "./data/milvus.db"
+    milvus_lite_db_name: str = "default"
     milvus_timeout: int = 10000  # 毫秒
 
     # RAG 配置
@@ -53,10 +54,13 @@ class Settings(BaseSettings):
     eval_output_dir: str = "eval/reports"
 
     # Elasticsearch 配置
+    es_scheme: str = "http"
     es_host: str = "localhost"
     es_port: int = 9200
     es_index: str = "biz"
     es_timeout: int = 10
+    es_analyzer: str = "standard"
+    es_search_analyzer: str = "standard"
 
     # 文档分块配置
     chunk_max_size: int = 800
@@ -69,7 +73,7 @@ class Settings(BaseSettings):
     mcp_monitor_url: str = "http://localhost:8004/mcp"
 
     @property
-    def mcp_servers(self) -> Dict[str, Dict[str, Any]]:
+    def mcp_servers(self) -> dict[str, dict[str, Any]]:
         """获取完整的 MCP 服务器配置"""
         return {
             "cls": {
@@ -79,7 +83,7 @@ class Settings(BaseSettings):
             "monitor": {
                 "transport": self.mcp_monitor_transport,
                 "url": self.mcp_monitor_url,
-            }
+            },
         }
 
 

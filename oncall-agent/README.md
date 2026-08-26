@@ -51,7 +51,7 @@ cp .env.example .env
 # 填入你的 DASHSCOPE_API_KEY
 vim .env  # 或使用其他编辑器
 
-# 4. 一键初始化（启动 Docker + 服务 + 上传文档）
+# 4. 确保本地 Elasticsearch 已启动，再一键初始化
 make init
 
 # 5. 一键启动
@@ -87,30 +87,24 @@ copy .env.example .env
 # 使用记事本或其他编辑器打开 .env 文件，填入你的 DASHSCOPE_API_KEY
 notepad .env
 
-# 4. 启动 Docker Desktop
-# 确保 Docker Desktop 已安装并正在运行
+# 4. 启动本地 Elasticsearch 9.x
+# 确认 http://localhost:9200 可访问；Milvus Lite 无需单独启动
 
-# 5. 启动 Milvus + Elasticsearch 检索基础设施（Docker Compose）
-docker compose -f vector-database.yml up -d
-
-# 6. 等待 Milvus 和 Elasticsearch 启动完成（首次启动可能需要更久）
-timeout /t 20
-
-# 7. 启动 MCP 服务
+# 5. 启动 MCP 服务
 # 启动 CLS 日志查询服务（新开一个 PowerShell 窗口）
 python mcp_servers/cls_server.py
 
 # 启动 Monitor 监控服务（新开一个 PowerShell 窗口）
 python mcp_servers/monitor_server.py
 
-# 8. 启动 FastAPI 主服务（新开一个 PowerShell 窗口）
+# 6. 启动 FastAPI 主服务（新开一个 PowerShell 窗口）
 # 注意：日志会自动输出到 logs\app_YYYY-MM-DD.log
-python -m uvicorn app.main:app --host 0.0.0.0 --port 9900
+python -m uvicorn app.main:app --host 0.0.0.0 --port 12000
 
-# 9. 上传文档到向量库（新开一个 PowerShell 窗口）
+# 7. 上传文档到向量库（新开一个 PowerShell 窗口）
 # 等待服务启动完成后执行
 timeout /t 5
-python -c "import requests, os, time; [requests.post('http://localhost:9900/api/upload', files={'file': open(f'aiops-docs/{f}', 'rb')}) or time.sleep(1) for f in os.listdir('aiops-docs') if f.endswith('.md')]"
+python -c "import requests, os, time; [requests.post('http://localhost:12000/api/upload', files={'file': open(f'aiops-docs/{f}', 'rb')}) or time.sleep(1) for f in os.listdir('aiops-docs') if f.endswith('.md')]"
 ```
 
 **Windows 一键启动脚本**（推荐）
@@ -126,8 +120,8 @@ python -c "import requests, os, time; [requests.post('http://localhost:9900/api/
 ```
 
 ### 访问服务
-- **Web 界面**: http://localhost:9900
-- **API 文档**: http://localhost:9900/docs
+- **Web 界面**: http://localhost:12000
+- **API 文档**: http://localhost:12000/docs
 - **Elasticsearch**: http://localhost:9200
 
 ## 📡 API 接口
@@ -146,18 +140,18 @@ python -c "import requests, os, time; [requests.post('http://localhost:9900/api/
 
 ```bash
 # 普通对话
-curl -X POST "http://localhost:9900/api/chat" \
+curl -X POST "http://localhost:12000/api/chat" \
   -H "Content-Type: application/json" \
   -d '{"Id":"session-123","Question":"你好"}'
 
 # 流式对话
-curl -X POST "http://localhost:9900/api/chat_stream" \
+curl -X POST "http://localhost:12000/api/chat_stream" \
   -H "Content-Type: application/json" \
   -d '{"Id":"session-123","Question":"你好"}' \
   --no-buffer
 
 # AIOps 诊断
-curl -X POST "http://localhost:9900/api/aiops" \
+curl -X POST "http://localhost:12000/api/aiops" \
   -H "Content-Type: application/json" \
   -d '{"session_id":"session-123"}' \
   --no-buffer
@@ -225,13 +219,12 @@ super_biz_agent_py/
 ├── logs/                                   # 日志目录（Loguru 自动创建）
 │   └── app_YYYY-MM-DD.log                  # 按天轮转的日志文件
 ├── uploads/                                # 上传文件临时目录
-├── volumes/                                # Milvus 数据持久化目录
+├── data/                                   # Milvus Lite 数据目录（自动创建）
 ├── .env.example                            # 环境变量模板（提交到仓库）
 ├── .env                                    # 本地环境变量配置（不提交）
 ├── Makefile                                # 项目管理命令（Linux/macOS）
 ├── start-windows.bat                       # Windows 启动脚本
 ├── stop-windows.bat                        # Windows 停止脚本
-├── vector-database.yml                     # Milvus Docker Compose 配置
 ├── pyproject.toml                          # 项目配置（依赖、元数据）
 ├── uv.lock                                 # uv 依赖锁定文件
 ├── pyrightconfig.json                      # Pyright 类型检查配置
@@ -249,9 +242,16 @@ DASHSCOPE_API_KEY=your-api-key （配置你自己的秘钥）
 DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1  # 不配置则默认会使用新加坡站点
 DASHSCOPE_MODEL=qwen-max
 
-# Milvus 配置
-MILVUS_HOST=localhost
-MILVUS_PORT=19530
+# Milvus Lite 配置
+MILVUS_LITE_PATH=./data/milvus.db
+MILVUS_LITE_DB_NAME=default
+
+# Elasticsearch 9.x 配置
+ES_SCHEME=http
+ES_HOST=localhost
+ES_PORT=9200
+ES_ANALYZER=standard
+ES_SEARCH_ANALYZER=standard
 
 # RAG 配置
 RAG_TOP_K=3
@@ -278,7 +278,7 @@ CHUNK_OVERLAP=100
 
 # 访问 Web 界面，点击"智能运维与诊断工具"
 # 或使用 API
-curl -X POST "http://localhost:9900/api/aiops" \
+curl -X POST "http://localhost:12000/api/aiops" \
   -H "Content-Type: application/json" \
   -d '{"session_id":"test"}' \
   --no-buffer
@@ -320,7 +320,7 @@ python scripts/run_ragas_eval.py --dataset eval/fixtures/sample_ragas_dataset.js
 
 ```bash
 # 项目管理
-make init              # 一键初始化（Docker + 服务 + 文档）
+make init              # 一键初始化（服务 + 文档）
 make start             # 启动所有服务
 make stop              # 停止所有服务
 make restart           # 重启所有服务
@@ -328,10 +328,6 @@ make restart           # 重启所有服务
 # 依赖管理
 make install-dev       # 安装开发依赖
 make sync              # 同步依赖
-
-# Docker 管理
-make up                # 启动 Docker 容器
-make down              # 停止 Docker 容器
 
 # 代码质量
 make format            # 格式化代码
@@ -367,7 +363,7 @@ cmd
 #### 3. 端口被占用（Windows）
 ```powershell
 # 查看占用端口的进程
-netstat -ano | findstr :9900
+netstat -ano | findstr :12000
 
 # 结束进程（替换 PID 为实际进程 ID）
 taskkill /F /PID <PID>
@@ -384,16 +380,11 @@ type .env | findstr DASHSCOPE_API_KEY  # Windows
 
 ### Milvus 连接失败
 ```bash
-# 确保本机有 Docker 服务并且已经启动（可以使用 Docker Desktop）
+# 确认 Milvus Lite 数据目录可写
+ls -la data                        # Linux/macOS
+Get-ChildItem data                 # Windows PowerShell
 
-# 检查 Milvus 状态
-docker ps | grep milvus
-
-# 重启 Milvus（使用 docker compose）
-docker compose -f vector-database.yml restart
-
-# 或者重启单个服务
-docker compose -f vector-database.yml restart standalone
+# 如需重建本地向量库，请先停止应用，再备份并删除 data/milvus.db
 ```
 
 ### 服务无法启动
@@ -406,7 +397,7 @@ tail -f mcp_cls.log                      # CLS MCP 服务
 tail -f mcp_monitor.log                  # Monitor MCP 服务
 
 # 检查端口占用
-lsof -i :9900  # FastAPI
+lsof -i :12000  # FastAPI
 lsof -i :8003  # CLS MCP
 lsof -i :8004  # Monitor MCP
 ```
@@ -423,7 +414,7 @@ type mcp_monitor.log      # Monitor MCP 服务
 Get-ChildItem logs\*.log | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Tail 50
 
 # 检查端口占用
-netstat -ano | findstr :9900  # FastAPI
+netstat -ano | findstr :12000  # FastAPI
 netstat -ano | findstr :8003  # CLS MCP
 netstat -ano | findstr :8004  # Monitor MCP
 ```

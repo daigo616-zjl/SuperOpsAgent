@@ -1,7 +1,6 @@
 """向量存储管理器 - 封装 Milvus VectorStore 操作"""
 
 import time
-from typing import List
 
 from langchain_core.documents import Document
 from langchain_milvus import Milvus
@@ -11,7 +10,6 @@ from app.config import config
 from app.core.milvus_client import milvus_manager
 from app.services.vector_embedding_service import vector_embedding_service
 
-
 # 统一使用 biz collection
 COLLECTION_NAME = "biz"
 
@@ -19,13 +17,13 @@ COLLECTION_NAME = "biz"
 class VectorStoreManager:
     """向量存储管理器"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """初始化向量存储管理器"""
-        self.vector_store = None
+        self.vector_store: Milvus
         self.collection_name = COLLECTION_NAME
         self._initialize_vector_store()
 
-    def _initialize_vector_store(self):
+    def _initialize_vector_store(self) -> None:
         """初始化 Milvus VectorStore"""
         try:
             # 必须在 PyMilvus / langchain_milvus 访问 Collection 之前建立连接，
@@ -34,8 +32,8 @@ class VectorStoreManager:
             _ = milvus_manager.connect()
 
             connection_args = {
-                "host": config.milvus_host,
-                "port": config.milvus_port,
+                "uri": milvus_manager.uri,
+                "db_name": config.milvus_lite_db_name,
             }
 
             # 创建 LangChain Milvus VectorStore
@@ -50,18 +48,18 @@ class VectorStoreManager:
                 vector_field="vector",  # 向量存储到 vector 字段
                 primary_field="id",  # 主键字段
                 metadata_field="metadata",  # 元数据字段
+                index_params={"index_type": "FLAT", "metric_type": "L2"},
             )
 
             logger.info(
-                f"VectorStore 初始化成功: {config.milvus_host}:{config.milvus_port}, "
-                f"collection: {self.collection_name}"
+                f"VectorStore 初始化成功: {milvus_manager.uri}, collection: {self.collection_name}"
             )
 
         except Exception as e:
             logger.error(f"VectorStore 初始化失败: {e}")
             raise
 
-    def add_documents(self, documents: List[Document], ids: List[str]) -> List[str]:
+    def add_documents(self, documents: list[Document], ids: list[str]) -> list[str]:
         """
         批量添加文档到向量存储（自动批量向量化）
 
@@ -85,7 +83,7 @@ class VectorStoreManager:
             elapsed = time.time() - start_time
             logger.info(
                 f"批量添加 {len(documents)} 个文档到 VectorStore 完成, "
-                f"耗时: {elapsed:.2f}秒, 平均: {elapsed/len(documents):.2f}秒/个"
+                f"耗时: {elapsed:.2f}秒, 平均: {elapsed / len(documents):.2f}秒/个"
             )
             return result_ids
         except Exception as e:
@@ -105,22 +103,22 @@ class VectorStoreManager:
         try:
             # 使用 milvus_manager 获取已连接的 collection
             collection = milvus_manager.get_collection()
-            
+
             # metadata 是 JSON 字段，使用 JSON 路径查询语法
             # _source 是文档的来源文件路径
             expr = f'metadata["_source"] == "{file_path}"'
-            
+
             result = collection.delete(expr)
             deleted_count = result.delete_count if hasattr(result, "delete_count") else 0
-            
+
             logger.info(f"删除文件旧数据: {file_path}, 删除数量: {deleted_count}")
             return deleted_count
-            
+
         except Exception as e:
             logger.error(f"删除文件旧数据失败: {e}")
             raise
 
-    def delete_by_ids(self, ids: List[str]) -> int:
+    def delete_by_ids(self, ids: list[str]) -> int:
         """
         按文档 ID 删除向量数据
 
@@ -150,7 +148,7 @@ class VectorStoreManager:
         """
         return self.vector_store
 
-    def similarity_search(self, query: str, k: int = 3) -> List[Document]:
+    def similarity_search(self, query: str, k: int = 3) -> list[Document]:
         """
         相似度搜索
 

@@ -3,9 +3,10 @@ AIOps 智能运维接口
 """
 
 import json
+
 from fastapi import APIRouter
-from sse_starlette.sse import EventSourceResponse
 from loguru import logger
+from sse_starlette.sse import EventSourceResponse
 
 from app.models.aiops import AIOpsRequest
 from app.services.aiops_service import aiops_service
@@ -89,7 +90,7 @@ async def diagnose_stream(request: AIOpsRequest):
 
     **使用示例：**
     ```bash
-    curl -X POST "http://localhost:9900/api/aiops" \\
+    curl -X POST "http://localhost:12000/api/aiops" \\
       -H "Content-Type: application/json" \\
       -d '{"session_id": "session-123"}' \\
       --no-buffer

@@ -14,7 +14,7 @@ class EsClientManager:
         self._async_client: AsyncElasticsearch | None = None
 
     def _hosts(self) -> list[str]:
-        return [f"http://{config.es_host}:{config.es_port}"]
+        return [f"{config.es_scheme}://{config.es_host}:{config.es_port}"]
 
     def _index_body(self) -> dict:
         return {
@@ -27,8 +27,8 @@ class EsClientManager:
                 "properties": {
                     "content": {
                         "type": "text",
-                        "analyzer": "ik_max_word",
-                        "search_analyzer": "ik_smart",
+                        "analyzer": config.es_analyzer,
+                        "search_analyzer": config.es_search_analyzer,
                     },
                     "source": {"type": "keyword"},
                     "file_name": {"type": "keyword"},
@@ -57,9 +57,7 @@ class EsClientManager:
         )
 
         if not self._sync_client.ping():
-            raise RuntimeError(
-                f"连接 Elasticsearch 失败: {config.es_host}:{config.es_port}"
-            )
+            raise RuntimeError(f"连接 Elasticsearch 失败: {config.es_host}:{config.es_port}")
 
         index_exists = self._sync_client.indices.exists(index=config.es_index)
         if not bool(index_exists):

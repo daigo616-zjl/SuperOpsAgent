@@ -1,4 +1,7 @@
-"""Milvus 客户端工厂模块"""
+"""Milvus Lite 客户端工厂模块。"""
+
+from pathlib import Path
+from typing import Any
 
 from loguru import logger
 from pymilvus import (
@@ -7,12 +10,14 @@ from pymilvus import (
     DataType,
     FieldSchema,
     MilvusClient,
+    MilvusException,
     connections,
     utility,
-    MilvusException,
 )
 
 from app.config import config
+
+_milvus_client_alias_patch_done = False
 
 
 def _patch_pymilvus_milvus_client_orm_alias() -> None:
@@ -24,7 +29,9 @@ def _patch_pymilvus_milvus_client_orm_alias() -> None:
     在已通过 ``connections.connect(alias="default", ...)`` 建立连接后，
     强制让 MilvusClient 使用 ``default`` 别名，与 ORM 一致。
     """
-    if getattr(_patch_pymilvus_milvus_client_orm_alias, "_done", False):
+    global _milvus_client_alias_patch_done
+
+    if _milvus_client_alias_patch_done:
         return
     try:
         from pymilvus.milvus_client.milvus_client import MilvusClient
@@ -33,28 +40,39 @@ def _patch_pymilvus_milvus_client_orm_alias() -> None:
 
     _orig_init = MilvusClient.__init__
 
-    def _wrapped_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+    def _wrapped_init(self: Any, *args: Any, **kwargs: Any) -> None:
         _orig_init(self, *args, **kwargs)
         self._using = "default"
 
-    MilvusClient.__init__ = _wrapped_init  # type: ignore[method-assign]
-    setattr(_patch_pymilvus_milvus_client_orm_alias, "_done", True)
+    MilvusClient.__init__ = _wrapped_init
+    _milvus_client_alias_patch_done = True
 
 
 class MilvusClientManager:
-    """Milvus 客户端管理器"""
+    """管理进程内 Milvus Lite 数据库和 ``biz`` collection。"""
 
     # 常量定义
     COLLECTION_NAME: str = "biz"
     VECTOR_DIM: int = 1024  # 统一使用 1024 维
     ID_MAX_LENGTH: int = 100
     CONTENT_MAX_LENGTH: int = 8000
-    DEFAULT_SHARD_NUMBER: int = 2
 
     def __init__(self) -> None:
         """初始化 Milvus 客户端管理器"""
         self._client: MilvusClient | None = None
         self._collection: Collection | None = None
+        self._uri: str | None = None
+
+    @property
+    def uri(self) -> str:
+        """返回规范化后的 Milvus Lite 数据库文件路径。"""
+        if self._uri is None:
+            path = Path(config.milvus_lite_path).expanduser()
+            if not path.is_absolute():
+                path = Path.cwd() / path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._uri = path.resolve().as_posix()
+        return self._uri
 
     def connect(self) -> MilvusClient:
         """
@@ -74,21 +92,25 @@ class MilvusClientManager:
         try:
             _patch_pymilvus_milvus_client_orm_alias()
 
-            logger.info(f"正在连接到 Milvus: {config.milvus_host}:{config.milvus_port}")
+            logger.info(f"正在打开 Milvus Lite: {self.uri}")
 
-            # 建立连接
+            # Windows 路径会被 Milvus Lite 解析为数据库上下文，因此显式指定
+            # default db_name，保证相对路径和绝对路径行为一致。
             connections.connect(
                 alias="default",
-                host=config.milvus_host,
-                port=str(config.milvus_port),
+                uri=self.uri,
+                db_name=config.milvus_lite_db_name,
                 timeout=config.milvus_timeout / 1000,  # 转换为秒
             )
 
             # 创建客户端
-            uri = f"http://{config.milvus_host}:{config.milvus_port}"
-            self._client = MilvusClient(uri=uri)
+            self._client = MilvusClient(
+                uri=self.uri,
+                db_name=config.milvus_lite_db_name,
+                timeout=config.milvus_timeout / 1000,
+            )
 
-            logger.info("成功连接到 Milvus")
+            logger.info("成功打开 Milvus Lite")
 
             # 检查并创建 collection
             if not self._collection_exists():
@@ -98,7 +120,7 @@ class MilvusClientManager:
             else:
                 logger.info(f"collection '{self.COLLECTION_NAME}' 已存在")
                 self._collection = Collection(self.COLLECTION_NAME)
-                
+
                 # 检查向量维度是否匹配
                 schema = self._collection.schema
                 vector_field = None
@@ -107,9 +129,13 @@ class MilvusClientManager:
                     if field.name == "vector":
                         vector_field = field
                         break
-                
-                if vector_field and hasattr(vector_field, 'params') and 'dim' in vector_field.params:
-                    existing_dim = vector_field.params['dim']
+
+                if (
+                    vector_field
+                    and hasattr(vector_field, "params")
+                    and "dim" in vector_field.params
+                ):
+                    existing_dim = vector_field.params["dim"]
                     if existing_dim != self.VECTOR_DIM:
                         logger.warning(
                             f"检测到向量维度不匹配！当前 collection 维度: {existing_dim}, 配置维度: {self.VECTOR_DIM}"
@@ -144,7 +170,7 @@ class MilvusClientManager:
         """检查 collection 是否存在"""
         # pymilvus 的类型标注可能不准确，实际返回 bool
         result = utility.has_collection(self.COLLECTION_NAME)
-        return bool(result)  # type: ignore[arg-type]
+        return bool(result)
 
     def _create_collection(self) -> None:
         """创建 biz collection"""
@@ -183,7 +209,6 @@ class MilvusClientManager:
         self._collection = Collection(
             name=self.COLLECTION_NAME,
             schema=schema,
-            num_shards=self.DEFAULT_SHARD_NUMBER,
         )
 
         # 创建索引
@@ -196,8 +221,8 @@ class MilvusClientManager:
 
         index_params = {
             "metric_type": "L2",  # 欧氏距离
-            "index_type": "IVF_FLAT",
-            "params": {"nlist": 128},
+            "index_type": "FLAT",
+            "params": {},
         }
 
         _ = self._collection.create_index(
@@ -263,8 +288,7 @@ class MilvusClientManager:
             if self._client is None:
                 return False
 
-            # 尝试列出 connections
-            _ = connections.list_connections()
+            _ = self._client.list_collections()
             return True
 
         except (MilvusException, ConnectionError) as e:
@@ -277,7 +301,7 @@ class MilvusClientManager:
     def close(self) -> None:
         """关闭连接"""
         errors = []
-        
+
         try:
             if self._collection is not None:
                 self._collection.release()
@@ -286,13 +310,19 @@ class MilvusClientManager:
             errors.append(f"释放 collection 失败: {e}")
 
         try:
+            if self._client is not None:
+                self._client.close()
+        except Exception as e:
+            errors.append(f"关闭 Milvus Lite 客户端失败: {e}")
+
+        try:
             if connections.has_connection("default"):
                 connections.disconnect("default")
         except Exception as e:
             errors.append(f"断开连接失败: {e}")
 
         self._client = None
-        
+
         if errors:
             error_msg = "; ".join(errors)
             logger.error(f"关闭 Milvus 连接时出现错误: {error_msg}")
@@ -305,10 +335,7 @@ class MilvusClientManager:
         return self
 
     def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: object
+        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object
     ) -> None:
         """上下文管理器退出"""
         self.close()
