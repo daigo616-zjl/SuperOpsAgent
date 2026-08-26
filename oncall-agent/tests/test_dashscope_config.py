@@ -22,10 +22,27 @@ def test_qwen_factory_passes_configured_api_base(monkeypatch) -> None:
     monkeypatch.setattr(config, "dashscope_api_base", "https://example.test/v1")
     monkeypatch.setattr(config, "dashscope_api_key", "test-key")
 
-    LLMFactory.create_qwen_chat_model(model="test-model", temperature=0, streaming=True)
+    LLMFactory.create_qwen_chat_model(
+        model="test-model",
+        temperature=0.1,
+        streaming=True,
+        max_tokens=1200,
+        enable_thinking=False,
+    )
 
     assert captured["base_url"] == "https://example.test/v1"
     assert captured["api_key"].get_secret_value() == "test-key"
     assert captured["model"] == "test-model"
-    assert captured["temperature"] == 0
+    assert captured["temperature"] == 0.1
     assert captured["streaming"] is True
+    assert captured["max_tokens"] == 1200
+    assert captured["enable_thinking"] is False
+
+
+def test_rag_generation_defaults_are_conservative() -> None:
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.rag_top_k == 5
+    assert settings.rag_temperature == 0.1
+    assert settings.rag_max_tokens == 1200
+    assert settings.rag_enable_thinking is False

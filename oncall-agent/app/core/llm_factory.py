@@ -52,6 +52,8 @@ class LLMFactory:
         model: str,
         temperature: float = 0.7,
         streaming: bool = False,
+        max_tokens: int | None = None,
+        enable_thinking: bool | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
     ) -> ChatQwen:
@@ -60,6 +62,8 @@ class LLMFactory:
             model=model,
             temperature=temperature,
             streaming=streaming,
+            max_tokens=max_tokens,
+            enable_thinking=enable_thinking,
             base_url=base_url or config.dashscope_api_base,
             api_key=SecretStr(api_key or config.dashscope_api_key),
         )

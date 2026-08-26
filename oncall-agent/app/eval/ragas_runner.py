@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from statistics import mean
 from typing import Any
@@ -56,12 +56,33 @@ class EvalReport:
         }
 
 
+class BatchedFaithfulness(Faithfulness):
+    """Run NLI in bounded batches to keep structured responses reliable."""
+
+    def __init__(self, *args: Any, statement_batch_size: int = 10, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.statement_batch_size = max(1, statement_batch_size)
+
+    async def _create_verdicts(self, statements: list[str], context: str) -> Any:
+        if not statements:
+            return await super()._create_verdicts(statements, context)
+
+        all_verdicts: list[Any] = []
+        last_result: Any = None
+        for start in range(0, len(statements), self.statement_batch_size):
+            batch = statements[start : start + self.statement_batch_size]
+            last_result = await super()._create_verdicts(batch, context)
+            all_verdicts.extend(last_result.statements)
+
+        return last_result.model_copy(update={"statements": all_verdicts})
+
+
 def _build_evaluator_client() -> AsyncOpenAI:
     return AsyncOpenAI(
         api_key=config.dashscope_api_key,
         base_url=config.dashscope_api_base,
         timeout=config.eval_metric_timeout,
-        max_retries=1,
+        max_retries=config.eval_client_max_retries,
     )
 
 
@@ -86,12 +107,30 @@ def _build_metrics() -> tuple[AsyncOpenAI, list[Any]]:
     return (
         client,
         [
-            Faithfulness(llm=evaluator_llm),
+            BatchedFaithfulness(
+                llm=evaluator_llm,
+                statement_batch_size=config.eval_faithfulness_statement_batch_size,
+            ),
             AnswerRelevancy(llm=evaluator_llm, embeddings=evaluator_embeddings),
             AnswerCorrectness(llm=evaluator_llm, embeddings=evaluator_embeddings),
             ContextRelevance(llm=evaluator_llm),
         ],
     )
+
+
+def _metric_timeout(name: str) -> int:
+    if name == "faithfulness":
+        return config.eval_faithfulness_timeout
+    if name == "answer_correctness":
+        return config.eval_answer_correctness_timeout
+    return config.eval_metric_timeout
+
+
+def _metric_error_message(exc: Exception, timeout: int) -> str:
+    if isinstance(exc, TimeoutError):
+        return f"TimeoutError: metric exceeded {timeout}s"
+    detail = str(exc).strip() or repr(exc)
+    return f"{type(exc).__name__}: {detail}"
 
 
 async def _score_details(
@@ -100,19 +139,23 @@ async def _score_details(
     client, metrics = _build_metrics()
     faithfulness, answer_relevancy, answer_correctness, context_relevance = metrics
     errors: list[dict[str, str]] = []
+    metric_semaphore = asyncio.Semaphore(max(1, config.eval_metric_max_concurrency))
 
     async def score_metric(
         detail: EvalDetail,
         name: str,
-        operation: Awaitable[Any],
+        operation_factory: Callable[[], Awaitable[Any]],
     ) -> float | None:
+        timeout = _metric_timeout(name)
         try:
-            result = await asyncio.wait_for(operation, timeout=config.eval_metric_timeout)
+            async with metric_semaphore:
+                result = await asyncio.wait_for(operation_factory(), timeout=timeout)
             return float(result.value) if isinstance(result.value, (int, float)) else None
         except Exception as exc:
-            message = f"{name} 评分失败: {exc}"
+            error = _metric_error_message(exc, timeout)
+            message = f"{name} 评分失败: {error}"
             logger.error(f"评测样本 {detail.id}: {message}")
-            errors.append({"id": detail.id, "metric": name, "error": str(exc)})
+            errors.append({"id": detail.id, "metric": name, "error": error})
             return None
 
     try:
@@ -123,16 +166,16 @@ async def _score_details(
             operations = [
                 (
                     "answer_relevancy",
-                    answer_relevancy.ascore(
+                    lambda detail=detail: answer_relevancy.ascore(
                         user_input=detail.question,
-                        response=detail.answer,
+                        response=detail.answer or "",
                     ),
                 ),
                 (
                     "answer_correctness",
-                    answer_correctness.ascore(
+                    lambda detail=detail: answer_correctness.ascore(
                         user_input=detail.question,
-                        response=detail.answer,
+                        response=detail.answer or "",
                         reference=detail.ground_truth,
                     ),
                 ),
@@ -142,15 +185,15 @@ async def _score_details(
                     [
                         (
                             "faithfulness",
-                            faithfulness.ascore(
+                            lambda detail=detail: faithfulness.ascore(
                                 user_input=detail.question,
-                                response=detail.answer,
+                                response=detail.answer or "",
                                 retrieved_contexts=detail.retrieved_contexts,
                             ),
                         ),
                         (
                             "context_relevance",
-                            context_relevance.ascore(
+                            lambda detail=detail: context_relevance.ascore(
                                 user_input=detail.question,
                                 retrieved_contexts=detail.retrieved_contexts,
                             ),
@@ -159,7 +202,10 @@ async def _score_details(
                 )
 
             values = await asyncio.gather(
-                *[score_metric(detail, name, operation) for name, operation in operations]
+                *[
+                    score_metric(detail, name, operation_factory)
+                    for name, operation_factory in operations
+                ]
             )
             detail.scores.update(
                 {name: value for (name, _), value in zip(operations, values, strict=True)}

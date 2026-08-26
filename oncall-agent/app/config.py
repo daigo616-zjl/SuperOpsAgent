@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     # RAG 配置
     rag_top_k: int = 5
     rag_model: str = "qwen-max"  # 使用快速响应模型，不带扩展思考
+    rag_temperature: float = 0.1
+    rag_max_tokens: int = 1200
+    rag_enable_thinking: bool = False
     rag_recall_size: int = 20
     rag_rerank_enabled: bool = True
     rag_rerank_model: str = "BAAI/bge-reranker-base"
@@ -56,6 +59,11 @@ class Settings(BaseSettings):
     eval_model: str = "qwen-max"
     eval_output_dir: str = "eval/reports"
     eval_metric_timeout: int = 90
+    eval_faithfulness_timeout: int = 300
+    eval_faithfulness_statement_batch_size: int = 10
+    eval_answer_correctness_timeout: int = 240
+    eval_metric_max_concurrency: int = 2
+    eval_client_max_retries: int = 3
 
     # Elasticsearch 配置
     es_scheme: str = "http"
