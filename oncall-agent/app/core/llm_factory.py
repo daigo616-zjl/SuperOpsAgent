@@ -11,15 +11,14 @@
 """
 
 from langchain_openai import ChatOpenAI
+from langchain_qwq import ChatQwen
+from pydantic import SecretStr
+
 from app.config import config
-from loguru import logger
 
 
 class LLMFactory:
     """LLM 工厂类 - 使用 OpenAI 兼容模式"""
-
-    # 阿里云 DashScope OpenAI 兼容模式 URL
-    DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
     @staticmethod
     def create_chat_model(
@@ -30,8 +29,8 @@ class LLMFactory:
         api_key: str | None = None,
     ) -> ChatOpenAI:
         model = model or config.dashscope_model
-        base_url = base_url or LLMFactory.DASHSCOPE_BASE_URL
-        api_key = api_key or config.dashscope_api_key
+        base_url = base_url or config.dashscope_api_base
+        resolved_api_key = SecretStr(api_key or config.dashscope_api_key)
 
         # 参考：https://help.aliyun.com/zh/model-studio/getting-started/models
         extra_body = {}
@@ -42,11 +41,29 @@ class LLMFactory:
             temperature=temperature,
             streaming=streaming,
             base_url=base_url,
-            api_key=api_key,
+            api_key=resolved_api_key,
             extra_body=extra_body if extra_body else None,
         )
 
         return llm
+
+    @staticmethod
+    def create_qwen_chat_model(
+        model: str,
+        temperature: float = 0.7,
+        streaming: bool = False,
+        base_url: str | None = None,
+        api_key: str | None = None,
+    ) -> ChatQwen:
+        """创建地域、凭据配置一致的 ChatQwen 客户端。"""
+        return ChatQwen(
+            model=model,
+            temperature=temperature,
+            streaming=streaming,
+            base_url=base_url or config.dashscope_api_base,
+            api_key=SecretStr(api_key or config.dashscope_api_key),
+        )
+
 
 # 全局 LLM 工厂实例
 llm_factory = LLMFactory()

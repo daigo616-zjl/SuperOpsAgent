@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from time import perf_counter
 from typing import Any
@@ -42,6 +43,44 @@ class RerankService:
             future.cancel()
             raise TimeoutError("rerank timeout") from exc
 
+    def warmup(self) -> bool:
+        """加载重排模型并执行一次最小推理，避免首个请求承担冷启动耗时。"""
+        if not config.rag_rerank_enabled or not config.rag_rerank_warmup_enabled:
+            logger.info("Rerank 预热已跳过")
+            return False
+
+        started_at = perf_counter()
+        warmup_doc = Document(page_content="用于初始化重排模型的预热文本。")
+        future = self._executor.submit(
+            self._predict_scores,
+            "重排模型预热",
+            [warmup_doc],
+        )
+        try:
+            scores = future.result(timeout=config.rag_rerank_warmup_timeout)
+            if len(scores) != 1:
+                raise ValueError("warmup score length mismatch")
+        except FuturesTimeoutError:
+            future.cancel()
+            logger.warning(
+                f"Rerank 预热超时: timeout={config.rag_rerank_warmup_timeout}s，"
+                "后续请求将按原有降级策略执行"
+            )
+            return False
+        except Exception as exc:
+            logger.warning(f"Rerank 预热失败: {exc}，后续请求将按原有降级策略执行")
+            return False
+
+        duration_ms = int((perf_counter() - started_at) * 1000)
+        logger.info(
+            f"Rerank 预热完成: model={config.rag_rerank_model}, duration_ms={duration_ms}"
+        )
+        return True
+
+    async def warmup_async(self) -> bool:
+        """在线程中执行预热，避免阻塞异步事件循环。"""
+        return await asyncio.to_thread(self.warmup)
+
     def rerank(self, query: str, docs: list[Document], top_k: int) -> list[Document]:
         if not docs or top_k <= 0:
             return []
@@ -54,7 +93,11 @@ class RerankService:
             scores = self._score_pairs(query, docs)
             if len(scores) != len(docs):
                 raise ValueError("score length mismatch")
-            ranked = sorted(zip(docs, scores), key=lambda item: item[1], reverse=True)
+            ranked = sorted(
+                zip(docs, scores, strict=True),
+                key=lambda item: item[1],
+                reverse=True,
+            )
             result = [doc for doc, _ in ranked[:top_k]]
             duration_ms = int((perf_counter() - started_at) * 1000)
             logger.info(

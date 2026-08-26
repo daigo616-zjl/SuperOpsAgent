@@ -18,6 +18,7 @@ class DashScopeEmbeddings(Embeddings):
     def __init__(
         self,
         api_key: str,
+        base_url: str,
         model: str = "text-embedding-v4",
         dimensions: int = 1024,
     ):
@@ -32,9 +33,7 @@ class DashScopeEmbeddings(Embeddings):
         if not api_key or api_key == "your-api-key-here":
             raise ValueError("请设置环境变量 DASHSCOPE_API_KEY")
 
-        self.client = OpenAI(
-            api_key=api_key, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
-        )
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.dimensions = dimensions
 
@@ -104,5 +103,8 @@ class DashScopeEmbeddings(Embeddings):
 
 # 全局单例
 vector_embedding_service = DashScopeEmbeddings(
-    api_key=config.dashscope_api_key, model=config.dashscope_embedding_model, dimensions=1024
+    api_key=config.dashscope_api_key,
+    base_url=config.dashscope_api_base,
+    model=config.dashscope_embedding_model,
+    dimensions=1024,
 )

@@ -1,18 +1,17 @@
 import asyncio
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_qwq import ChatQwen
 from loguru import logger
 
 from app.config import config
+from app.core.llm_factory import LLMFactory
 
 
 class QueryRewriteService:
     def __init__(self) -> None:
         self.model_name = config.rag_query_rewrite_model or config.rag_model
-        self.model = ChatQwen(
+        self.model = LLMFactory.create_qwen_chat_model(
             model=self.model_name,
-            api_key=config.dashscope_api_key,
             temperature=0,
             streaming=False,
         )
@@ -61,15 +60,13 @@ class QueryRewriteService:
             rounds = config.rag_query_rewrite_history_rounds
             if rounds <= 0:
                 return []
-            return history[-(rounds * 2):]
+            return history[-(rounds * 2) :]
         except Exception as e:
             logger.warning(f"查询重写读取会话历史失败: session_id={session_id}, error={e}")
             return []
 
     def _build_rewrite_prompt(self, query: str, history: list[dict[str, str]]) -> str:
-        history_text = "\n".join(
-            f"[{item['role']}] {item['content']}" for item in history
-        )
+        history_text = "\n".join(f"[{item['role']}] {item['content']}" for item in history)
         if not history_text:
             history_text = "(无历史对话)"
 
@@ -111,7 +108,9 @@ class QueryRewriteService:
             else:
                 rewritten_query = str(content).strip()
 
-            fallback = not rewritten_query or len(rewritten_query) > config.rag_query_rewrite_max_length
+            fallback = (
+                not rewritten_query or len(rewritten_query) > config.rag_query_rewrite_max_length
+            )
             final_query = original_query if fallback else rewritten_query
             if fallback:
                 logger.warning(

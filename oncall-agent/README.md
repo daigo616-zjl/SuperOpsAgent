@@ -1,433 +1,335 @@
 # SuperBizAgent
 
-> 企业级智能对话和运维助手，支持 RAG 知识库问答和 AIOps 智能诊断
+SuperBizAgent 是一个面向 On-Call 场景的智能运维助手。项目使用 FastAPI 提供 Web
+与 API 服务，通过 LangGraph 编排 RAG 问答和 AIOps 诊断流程，并结合 Milvus Lite、
+Elasticsearch、DashScope 和 MCP 完成知识检索、告警分析与诊断建议生成。
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-green.svg)](https://fastapi.tiangolo.com/)
-[![LangChain](https://img.shields.io/badge/LangChain-latest-orange.svg)](https://www.langchain.com/)
+当前版本以本地开发和功能验证为主：Milvus Lite 直接使用本地数据库文件，
+Elasticsearch 使用本机服务，CLS 与 Monitor MCP 返回模拟数据，不需要 Docker。
 
-## ✨ 核心特性
+## 主要能力
 
-- 🤖 **智能对话** - LangChain 多轮对话 + 流式输出
-- 📚 **RAG 问答** - Milvus 向量检索 + Elasticsearch BM25 双路召回，支持文档上传、自动建立索引、自动更新知识库
-- 🔧 **AIOps 诊断** - Plan-Execute-Replan 自动故障诊断和根因分析
-- 🌐 **Web 界面** - 现代化 UI，支持多种对话模式：快速问答/流式对话
-- 🔌 **MCP 集成** - 日志查询和监控数据工具接入
+- RAG 问答：向量召回与 Elasticsearch BM25 双路检索。
+- 混合排序：支持 RRF 融合、Cross-Encoder 重排序和查询改写。
+- 文档知识库：上传 Markdown 文档后自动分块并建立向量及全文索引。
+- AIOps 诊断：使用 Plan-Execute-Replan 工作流调用日志和监控 MCP 工具。
+- 流式输出：聊天和 AIOps 诊断均支持 SSE。
+- 离线评测：内置 Ragas 数据集加载、执行和 JSON 报告输出。
+- 本地运行：Milvus Lite 无需独立服务或 Docker。
 
-## 🛠️ 技术栈
+## 系统流程
 
-- **框架**: FastAPI + LangChain + LangGraph
-- **LLM**: 阿里云 DashScope (通义千问)
-- **检索层**: Milvus + Elasticsearch
-- **工具协议**: MCP (Model Context Protocol)
+```mermaid
+flowchart LR
+    U["用户问题"] --> Q["查询改写"]
+    Q --> V["Milvus Lite 向量召回"]
+    Q --> E["Elasticsearch BM25"]
+    V --> F["RRF 融合与重排序"]
+    E --> F
+    F --> L["DashScope LLM"]
+    L --> A["回答"]
 
-## 🚀 快速开始
+    O["AIOps 诊断请求"] --> P["LangGraph 规划"]
+    P --> M["CLS / Monitor MCP"]
+    M --> R["复盘与诊断建议"]
+```
 
-### 环境要求
-- Python 3.10+
-- 阿里云 DashScope API Key ([获取地址](https://dashscope.aliyun.com/))
+## 环境要求
 
-### 安装和启动
+- Python 3.11、3.12 或 3.13。
+- Elasticsearch 9.x；本项目已使用 9.2.4 验证。
+- DashScope API Key，用于对话、查询改写、向量嵌入和评测。
+- Windows 推荐安装 `uv`；未安装时启动脚本会回退到 `pip`。
 
-#### Linux/macOS 环境
+默认服务地址：
+
+| 服务 | 地址 | 说明 |
+| --- | --- | --- |
+| Web/API | `http://localhost:12000` | FastAPI 与静态页面 |
+| API 文档 | `http://localhost:12000/docs` | Swagger UI |
+| Elasticsearch | `http://localhost:9200` | 本地 Elasticsearch 9.x |
+| CLS MCP | `http://localhost:8003/mcp` | 模拟日志查询 |
+| Monitor MCP | `http://localhost:8004/mcp` | 模拟监控查询 |
+
+项目使用 `12000` 作为默认 API 端口，避免部分 Windows/Hyper-V 环境保留
+`9808-10007` 端口段导致 `9900` 无法绑定。
+
+## 快速开始：Windows
+
+仓库中的应用位于 `oncall-agent` 子目录：
+
+```powershell
+git clone https://github.com/daigo616-zjl/oncall-agent.git
+cd oncall-agent\oncall-agent
+```
+
+创建本地配置：
+
+```powershell
+copy .env.example .env
+notepad .env
+```
+
+至少填写：
+
+```dotenv
+DASHSCOPE_API_KEY=你的DashScopeKey
+```
+
+先启动本地 Elasticsearch，并确认以下地址可访问：
+
+```powershell
+curl.exe http://localhost:9200
+```
+
+随后执行一键启动：
+
+```powershell
+.\start-windows.bat
+```
+
+脚本会依次完成：
+
+1. 检查 `uv` 和 Python 环境。
+2. 创建或同步 `.venv`。
+3. 检查 Elasticsearch。
+4. 准备 `data/` 下的 Milvus Lite 数据库。
+5. 启动 CLS MCP、Monitor MCP 和 FastAPI。
+6. 健康检查成功后，自动上传 `aiops-docs\*.md`。
+
+停止项目：
+
+```powershell
+.\stop-windows.bat
+```
+
+## 手动启动
+
+安装依赖：
+
+```powershell
+uv sync
+.\.venv\Scripts\activate
+```
+
+在三个终端中分别运行：
+
+```powershell
+python mcp_servers\cls_server.py
+```
+
+```powershell
+python mcp_servers\monitor_server.py
+```
+
+```powershell
+python -m uvicorn app.main:app --host 0.0.0.0 --port 12000
+```
+
+Linux/macOS 可使用对应的 `/` 路径，也可以执行：
 
 ```bash
-# 1. 克隆项目
-git clone <repository_url>
-cd super_biz_agent_py
-
-# 2. 安装依赖（推荐使用 uv）
-# 方式 1: 使用 uv（推荐，更快）
-pip install uv
-uv venv
-source .venv/bin/activate
-uv pip install -e .
-
-# 方式 2: 使用 pip
-pip install -e .
-
-# 3. 初始化配置文件
-cp .env.example .env
-# 填入你的 DASHSCOPE_API_KEY
-vim .env  # 或使用其他编辑器
-
-# 4. 确保本地 Elasticsearch 已启动，再一键初始化
 make init
-
-# 5. 一键启动
 make start
 ```
 
-#### Windows 环境（PowerShell/CMD）
+仅手动启动 Uvicorn 不会自动扫描 `aiops-docs`。需要通过 `/api/upload` 上传文档，
+或自行遍历目录调用该接口。
 
-如果Windows 不支持 `make` 命令，可以手动执行以下步骤以启动服务：
+## AIOps 知识文档
+
+`aiops-docs/` 保存启动时导入的 Markdown 运维知识。当前包含 CPU、内存、磁盘、
+服务不可用和响应缓慢等示例，以及只有 3 条内容的测试文件：
+
+```text
+aiops-docs/
+├── cpu_high_usage.md
+├── disk_high_usage.md
+├── memory_high_usage.md
+├── service_unavailable.md
+├── slow_response.md
+└── test_knowledge.md
+```
+
+修改或新增文档后，重新运行 `start-windows.bat` 会再次上传全部 Markdown 文件。
+当前运行中的 API 不会实时监控该目录。
+
+手动上传单个文件：
 
 ```powershell
-# 1. 克隆项目
-git clone <repository_url>
-cd super_biz_agent_py
-
-# 2. 创建虚拟环境并安装依赖
-# 方式 1: 使用 uv（推荐，更快）
-pip install uv
-# 创建虚拟环境
-uv venv
-# 激活虚拟环境
-.venv\Scripts\activate
-# 安装所有依赖
-uv pip install -e .
-
-# 方式 2: 使用 pip
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e .
-
-# 3. 初始化配置文件
-copy .env.example .env
-# 使用记事本或其他编辑器打开 .env 文件，填入你的 DASHSCOPE_API_KEY
-notepad .env
-
-# 4. 启动本地 Elasticsearch 9.x
-# 确认 http://localhost:9200 可访问；Milvus Lite 无需单独启动
-
-# 5. 启动 MCP 服务
-# 启动 CLS 日志查询服务（新开一个 PowerShell 窗口）
-python mcp_servers/cls_server.py
-
-# 启动 Monitor 监控服务（新开一个 PowerShell 窗口）
-python mcp_servers/monitor_server.py
-
-# 6. 启动 FastAPI 主服务（新开一个 PowerShell 窗口）
-# 注意：日志会自动输出到 logs\app_YYYY-MM-DD.log
-python -m uvicorn app.main:app --host 0.0.0.0 --port 12000
-
-# 7. 上传文档到向量库（新开一个 PowerShell 窗口）
-# 等待服务启动完成后执行
-timeout /t 5
-python -c "import requests, os, time; [requests.post('http://localhost:12000/api/upload', files={'file': open(f'aiops-docs/{f}', 'rb')}) or time.sleep(1) for f in os.listdir('aiops-docs') if f.endswith('.md')]"
+curl.exe -X POST http://localhost:12000/api/upload `
+  -F "file=@aiops-docs/test_knowledge.md"
 ```
 
-**Windows 一键启动脚本**（推荐）
+## 配置
 
-使用启动脚本：
+完整模板见 `.env.example`，本地值写入 `.env`。`.env` 已被 Git 忽略，不应提交
+API Key 或其他凭据。
+
+### 应用与模型
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `HOST` | `0.0.0.0` | API 监听地址 |
+| `PORT` | `12000` | API 端口 |
+| `DASHSCOPE_API_KEY` | 空 | 必填的 DashScope Key |
+| `DASHSCOPE_API_BASE` | 北京兼容模式地址 | DashScope Key 所属地域的 API 地址 |
+| `DASHSCOPE_MODEL` | `qwen-max` | 通用对话模型 |
+| `DASHSCOPE_EMBEDDING_MODEL` | `text-embedding-v4` | 1024 维嵌入模型 |
+| `RAG_MODEL` | `qwen-max` | RAG 回答模型 |
+| `RAG_QUERY_REWRITE_MODEL` | 空 | 空值时复用 RAG 主模型 |
+| `EVAL_MODEL` | `qwen-max` | 离线评测模型 |
+| `EVAL_METRIC_TIMEOUT` | `90` | 单项 Ragas 指标超时秒数 |
+
+`DASHSCOPE_API_BASE` 必须与 Key 的地域一致。默认值是北京地域：
+
+```dotenv
+DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
+```
+
+例如新加坡地域应使用 `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`。
+项目会把该配置同时传给 ChatQwen、ChatOpenAI 和向量嵌入客户端，避免不同模型
+请求落到不同地域。
+
+### Milvus Lite 与 Elasticsearch
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `MILVUS_LITE_PATH` | `./data/milvus.db` | 本地数据库文件 |
+| `MILVUS_LITE_DB_NAME` | `default` | 数据库名称 |
+| `MILVUS_TIMEOUT` | `10000` | 连接超时，毫秒 |
+| `ES_SCHEME` | `http` | Elasticsearch 协议 |
+| `ES_HOST` | `localhost` | Elasticsearch 主机 |
+| `ES_PORT` | `9200` | Elasticsearch 端口 |
+| `ES_INDEX` | `biz` | 全文索引名称 |
+| `ES_ANALYZER` | `standard` | 建索引分词器 |
+| `ES_SEARCH_ANALYZER` | `standard` | 查询分词器 |
+
+只有本地 Elasticsearch 已安装 IK 插件时，才应将分词器改成
+`ik_max_word` 和 `ik_smart`。
+
+### 检索与 MCP
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `RAG_TOP_K` | `5` | 最终返回文档数 |
+| `RAG_RECALL_SIZE` | `20` | 每路初始召回数 |
+| `RAG_RERANK_ENABLED` | `true` | 是否启用重排序 |
+| `RAG_RERANK_MODEL` | `BAAI/bge-reranker-base` | 本地重排序模型 |
+| `RAG_RERANK_WARMUP_ENABLED` | `true` | 启动 API 或离线评测时是否提前预热重排模型 |
+| `RAG_RERANK_WARMUP_TIMEOUT` | `120` | 重排模型预热超时秒数 |
+| `RAG_QUERY_REWRITE_ENABLED` | `true` | 是否启用查询改写 |
+| `MCP_CLS_URL` | `http://localhost:8003/mcp` | CLS MCP 地址 |
+| `MCP_MONITOR_URL` | `http://localhost:8004/mcp` | Monitor MCP 地址 |
+
+## API
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/api/health` | 检查 Milvus Lite 和 Elasticsearch |
+| `POST` | `/api/chat` | 普通 RAG 对话 |
+| `POST` | `/api/chat_stream` | SSE 流式 RAG 对话 |
+| `POST` | `/api/chat/clear` | 清空指定会话 |
+| `GET` | `/api/chat/session/{session_id}` | 获取会话信息 |
+| `POST` | `/api/upload` | 上传并索引文档 |
+| `POST` | `/api/index_directory` | 索引指定目录 |
+| `POST` | `/api/aiops` | SSE 流式 AIOps 诊断 |
+
+普通对话示例。请求字段支持代码定义的别名 `Id` 和 `Question`：
 
 ```powershell
-# 启动所有服务
-.\start-windows.bat
-
-# 停止所有服务
-.\stop-windows.bat
+curl.exe -X POST http://localhost:12000/api/chat `
+  -H "Content-Type: application/json" `
+  -d '{"Id":"demo-session","Question":"CPU 持续超过 90% 应该如何排查？"}'
 ```
 
-### 访问服务
-- **Web 界面**: http://localhost:12000
-- **API 文档**: http://localhost:12000/docs
-- **Elasticsearch**: http://localhost:9200
+健康检查：
 
-## 📡 API 接口
-
-### 核心接口
-
-| 功能 | 方法 | 路径 | 说明 |
-|------|------|------|------|
-| 普通对话 | POST | `/api/chat` | 一次性返回 |
-| 流式对话 | POST | `/api/chat_stream` | SSE 流式输出 |
-| AIOps 诊断 | POST | `/api/aiops` | 自动故障诊断（流式） |
-| 文件上传 | POST | `/api/upload` | 上传并索引文档 |
-| 健康检查 | GET | `/api/health` | 服务状态检查 |
-
-### 使用示例
-
-```bash
-# 普通对话
-curl -X POST "http://localhost:12000/api/chat" \
-  -H "Content-Type: application/json" \
-  -d '{"Id":"session-123","Question":"你好"}'
-
-# 流式对话
-curl -X POST "http://localhost:12000/api/chat_stream" \
-  -H "Content-Type: application/json" \
-  -d '{"Id":"session-123","Question":"你好"}' \
-  --no-buffer
-
-# AIOps 诊断
-curl -X POST "http://localhost:12000/api/aiops" \
-  -H "Content-Type: application/json" \
-  -d '{"session_id":"session-123"}' \
-  --no-buffer
-```
-
-## 📁 项目结构
-
-```
-super_biz_agent_py/
-├── app/                                    # 应用核心
-│   ├── __init__.py                         # 包初始化（自动加载日志配置）
-│   ├── main.py                             # FastAPI 应用入口
-│   ├── config.py                           # 配置管理（环境变量、MCP 服务器配置）
-│   ├── api/                                # API 路由层
-│   │   ├── __init__.py
-│   │   ├── chat.py                         # 对话接口（RAG 聊天）
-│   │   ├── aiops.py                        # AIOps 接口（故障诊断）
-│   │   ├── file.py                         # 文件管理（文档上传）
-│   │   └── health.py                       # 健康检查（服务状态）
-│   ├── services/                           # 业务服务层
-│   │   ├── __init__.py
-│   │   ├── rag_agent_service.py            # RAG Agent（LangGraph 状态图）
-│   │   ├── aiops_service.py                # AIOps 服务（计划-执行-重规划）
-│   │   ├── vector_store_manager.py         # 向量存储管理器
-│   │   ├── vector_embedding_service.py     # 向量embedding服务
-│   │   ├── vector_index_service.py         # 向量索引服务
-│   │   ├── vector_search_service.py        # 向量检索服务
-│   │   └── document_splitter_service.py    # 文档分割服务
-│   ├── agent/                              # Agent 模块
-│   │   ├── __init__.py
-│   │   ├── mcp_client.py                   # MCP 客户端（工具调用）
-│   │   └── aiops/                          # AIOps 核心逻辑
-│   │       ├── __init__.py
-│   │       ├── planner.py                  # 计划制定器
-│   │       ├── executor.py                 # 步骤执行器
-│   │       ├── replanner.py                # 重规划器
-│   │       ├── state.py                    # 状态定义
-│   │       └── utils.py                    # 工具函数
-│   ├── models/                             # 数据模型层
-│   │   ├── __init__.py
-│   │   ├── aiops.py                        # AIOps 模型
-│   │   ├── document.py                     # 文档模型
-│   │   ├── request.py                      # 请求模型
-│   │   └── response.py                     # 响应模型
-│   ├── tools/                              # Agent 工具集
-│   │   ├── __init__.py
-│   │   ├── knowledge_tool.py               # 知识库查询工具
-│   │   └── time_tool.py                    # 时间工具
-│   ├── core/                               # 核心组件
-│   │   ├── __init__.py
-│   │   ├── llm_factory.py                  # LLM 工厂（模型管理）
-│   │   └── milvus_client.py                # Milvus 客户端
-│   └── utils/                              # 工具类
-│       ├── __init__.py
-│       └── logger.py                       # 日志配置（Loguru）
-├── static/                                 # Web 前端（纯静态）
-│   ├── index.html                          # 主页面
-│   ├── app.js                              # 前端逻辑
-│   └── styles.css                          # 样式表
-├── mcp_servers/                            # MCP 服务器
-│   ├── cls_server.py                       # CLS 日志查询服务
-│   ├── monitor_server.py                   # 监控数据服务
-│   └── README.md                           # MCP 服务说明
-├── aiops-docs/                             # 运维知识库（Markdown 文档）
-├── logs/                                   # 日志目录（Loguru 自动创建）
-│   └── app_YYYY-MM-DD.log                  # 按天轮转的日志文件
-├── uploads/                                # 上传文件临时目录
-├── data/                                   # Milvus Lite 数据目录（自动创建）
-├── .env.example                            # 环境变量模板（提交到仓库）
-├── .env                                    # 本地环境变量配置（不提交）
-├── Makefile                                # 项目管理命令（Linux/macOS）
-├── start-windows.bat                       # Windows 启动脚本
-├── stop-windows.bat                        # Windows 停止脚本
-├── pyproject.toml                          # 项目配置（依赖、元数据）
-├── uv.lock                                 # uv 依赖锁定文件
-├── pyrightconfig.json                      # Pyright 类型检查配置
-└── README.md                               # 项目说明
-```
-
-## ⚙️ 配置说明
-
-复制 `.env.example` 为 `.env` 后进行配置：
-
-```bash
-# 阿里云LLM DashScope 配置（必填）
-# 秘钥管理： https://bailian.console.aliyun.com/cn-beijing/?spm=5176.29597918.J_SEsSjsNv72yRuRFS2VknO.2.61ac133ccTVQLw&tab=demohouse#/api-key
-DASHSCOPE_API_KEY=your-api-key （配置你自己的秘钥）
-DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1  # 不配置则默认会使用新加坡站点
-DASHSCOPE_MODEL=qwen-max
-
-# Milvus Lite 配置
-MILVUS_LITE_PATH=./data/milvus.db
-MILVUS_LITE_DB_NAME=default
-
-# Elasticsearch 9.x 配置
-ES_SCHEME=http
-ES_HOST=localhost
-ES_PORT=9200
-ES_ANALYZER=standard
-ES_SEARCH_ANALYZER=standard
-
-# RAG 配置
-RAG_TOP_K=3
-CHUNK_MAX_SIZE=800
-CHUNK_OVERLAP=100
-```
-
-## 🎯 AIOps 智能运维
-
-基于 **Plan-Execute-Replan** 模式实现自动故障诊断。
-
-### 核心特性
-- ✅ 自动制定诊断计划（Planner）
-- ✅ 智能工具调用（Executor）
-- ✅ 动态调整步骤（Replanner）
-- ✅ 流式输出诊断过程
-- ✅ 生成结构化报告
-
-### 快速测试
-
-```bash
-# 服务已通过 make init 自动启动
-# 如需重启服务：make restart
-
-# 访问 Web 界面，点击"智能运维与诊断工具"
-# 或使用 API
-curl -X POST "http://localhost:12000/api/aiops" \
-  -H "Content-Type: application/json" \
-  -d '{"session_id":"test"}' \
-  --no-buffer
-```
-
-### 诊断流程
-```
-1. Planner 制定计划 → 生成 4-6 个诊断步骤
-2. Executor 执行步骤 → 调用 MCP 工具（日志查询、监控数据）
-3. Replanner 评估结果 → 决定继续/调整/生成报告
-4. 输出诊断报告 → 根因分析 + 运维建议
-```
-
-## 🧪 离线 RAGAS 评测
-
-可以使用离线脚本读取 JSONL 数据集，批量生成回答并输出 JSON 评测报告。
-
-- 输入：JSONL 数据集
-- 输出：`eval/reports/` 下的 JSON 报告
-- 报告会记录每条样本的最终 answer、真实 retrieved_contexts，以及包括 `context_relevance` 在内的评分结果
-
-示例命令：
-
-```bash
-python scripts/run_ragas_eval.py --dataset eval/fixtures/sample_ragas_dataset.jsonl
-```
-
-评测过程中仍沿用真实回答链路，不额外重复检索；因此报告里的 `retrieved_contexts` 就是该次回答实际使用的上下文。
-
-数据集单行示例：
-
-```json
-{"id":"case-001","question":"CPU 持续升高时应该先看什么指标？","ground_truth":"应先查看 CPU 使用率趋势、负载、异常进程以及相关监控指标。"}
-```
-
-## 📝 开发指南
-
-### 常用命令
-
-```bash
-# 项目管理
-make init              # 一键初始化（服务 + 文档）
-make start             # 启动所有服务
-make stop              # 停止所有服务
-make restart           # 重启所有服务
-
-# 依赖管理
-make install-dev       # 安装开发依赖
-make sync              # 同步依赖
-
-# 代码质量
-make format            # 格式化代码
-make lint              # 代码检查
-```
-
-
-## 🐛 常见问题
-
-### Windows 环境问题
-
-#### 1. `make` 命令不可用
-Windows 不支持 `make` 命令，请使用提供的批处理脚本：
 ```powershell
-# 启动服务
-.\start-windows.bat
-
-# 停止服务
-.\stop-windows.bat
+curl.exe http://localhost:12000/api/health
 ```
 
-#### 2. PowerShell 执行策略限制
-如果遇到 "无法加载文件，因为在此系统上禁止运行脚本" 错误：
+AIOps 诊断：
+
 ```powershell
-# 临时允许脚本执行（管理员权限）
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
-
-# 或者使用 CMD 而不是 PowerShell
-cmd
-.\start-windows.bat
+curl.exe -N -X POST http://localhost:12000/api/aiops `
+  -H "Content-Type: application/json" `
+  -d '{"session_id":"aiops-demo"}'
 ```
 
-#### 3. 端口被占用（Windows）
+## MCP 数据说明
+
+`mcp_servers/cls_server.py` 和 `mcp_servers/monitor_server.py` 当前提供模拟数据，
+用于验证日志搜索、CPU/内存指标、服务状态、进程列表和历史工单等诊断流程。
+
+这两个 MCP 服务不会自动读取真实生产日志或监控系统。生产接入时，需要在对应
+Server 中替换数据生成逻辑，并配置腾讯云 CLS、Prometheus、Grafana 或其他实际
+数据源的鉴权与 API 调用。
+
+## 离线评测
+
+项目提供一个示例 JSONL 数据集：`eval/fixtures/sample_ragas_dataset.jsonl`。
+
+离线评测会直接打开 Milvus Lite 数据文件。运行前请停止 FastAPI，避免两个进程同时
+占用 `data/milvus.db`；Elasticsearch、CLS MCP 和 Monitor MCP 应保持运行。评测命令
+会自行初始化并在结束时关闭 Milvus 与 Elasticsearch 客户端。
+
 ```powershell
-# 查看占用端口的进程
-netstat -ano | findstr :12000
-
-# 结束进程（替换 PID 为实际进程 ID）
-taskkill /F /PID <PID>
+uv run run-ragas-eval `
+  --dataset eval/fixtures/sample_ragas_dataset.jsonl
 ```
 
-### 通用问题
+默认报告写入 `eval/reports/`。也可以使用 `--output` 指定 JSON 文件路径。
 
-### API Key 错误
-```bash
-# 检查环境变量
-cat .env | grep DASHSCOPE_API_KEY    # Linux/macOS
-type .env | findstr DASHSCOPE_API_KEY  # Windows
-```
+## 开发与测试
 
-### Milvus 连接失败
-```bash
-# 确认 Milvus Lite 数据目录可写
-ls -la data                        # Linux/macOS
-Get-ChildItem data                 # Windows PowerShell
+安装开发依赖：
 
-# 如需重建本地向量库，请先停止应用，再备份并删除 data/milvus.db
-```
-
-### 服务无法启动
-
-**Linux/macOS:**
-```bash
-# 查看服务日志
-tail -f logs/app_$(date +%Y-%m-%d).log  # FastAPI 主服务（Loguru 日志）
-tail -f mcp_cls.log                      # CLS MCP 服务
-tail -f mcp_monitor.log                  # Monitor MCP 服务
-
-# 检查端口占用
-lsof -i :12000  # FastAPI
-lsof -i :8003  # CLS MCP
-lsof -i :8004  # Monitor MCP
-```
-
-**Windows:**
 ```powershell
-# 查看服务日志（获取今天的日期）
-$today = Get-Date -Format "yyyy-MM-dd"
-type logs\app_$today.log  # FastAPI 主服务（Loguru 日志）
-type mcp_cls.log          # CLS MCP 服务
-type mcp_monitor.log      # Monitor MCP 服务
-
-# 或者查看最新的日志文件
-Get-ChildItem logs\*.log | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Tail 50
-
-# 检查端口占用
-netstat -ano | findstr :12000  # FastAPI
-netstat -ano | findstr :8003  # CLS MCP
-netstat -ano | findstr :8004  # Monitor MCP
+uv sync --extra dev
 ```
 
-## 📚 参考资源
+执行测试和静态检查：
 
-- [FastAPI 文档](https://fastapi.tiangolo.com/)
-- [LangChain 文档](https://python.langchain.com/)
-- [LangGraph Plan-Execute](https://langchain-ai.github.io/langgraph/tutorials/plan-and-execute/)
-- [阿里云 DashScope](https://dashscope.aliyun.com/)
-- [MCP 协议](https://modelcontextprotocol.io/)
+```powershell
+python -m pytest tests -q
+python -m ruff check app tests
+```
 
-## 📄 许可证
-author： chief
+Milvus Lite 测试会使用临时数据库，不依赖 Docker 或外部 Milvus Server。
 
-MIT License
+## 运行数据
+
+以下内容只保存在本地，并已通过 `.gitignore` 排除：
+
+- `.env`：本地配置和密钥。
+- `.venv/`、`.uv-python/`、`.uv-cache/`：Python 运行环境和缓存。
+- `data/`：Milvus Lite 数据文件。
+- `logs/`：应用与后台进程日志。
+- `.pytest_cache/`、`.mypy_cache/`、`.ruff_cache/`、`htmlcov/`：开发工具产物。
+
+## 常见问题
+
+### Elasticsearch 连接失败
+
+确认 `http://localhost:9200` 可访问，并检查 `.env` 中的 `ES_SCHEME`、`ES_HOST`
+和 `ES_PORT`。项目启动时会主动 ping Elasticsearch；连接失败会阻止 API 启动。
+
+### Milvus Lite 无法创建数据库
+
+确认 `MILVUS_LITE_PATH` 的父目录可写。默认使用 `./data/milvus.db`，目录会自动创建。
+
+### MCP 地址返回 406
+
+浏览器直接访问 `/mcp` 时缺少 MCP 协议请求头，返回 406 属于正常现象。应通过
+MCP 客户端或项目内的 AIOps 流程调用。
+
+### Windows 日志出现 UnicodeEncodeError
+
+这是 GBK 控制台输出 Emoji 时的编码问题，通常不影响 API 运行。可以先执行
+`chcp 65001`，或设置 `PYTHONUTF8=1` 后再启动。
+
+### 文档没有自动上传
+
+自动上传只由 `start-windows.bat` 执行，并且必须等待 `/api/health` 成功。手动启动
+Uvicorn 后，需要自行调用 `/api/upload`。

@@ -1,6 +1,7 @@
 """BM25 检索服务模块"""
 
-from typing import Any, Dict, List
+import asyncio
+from typing import Any
 
 from loguru import logger
 
@@ -16,7 +17,7 @@ class BM25SearchResult:
         id: str,
         content: str,
         score: float,
-        metadata: Dict[str, Any],
+        metadata: dict[str, Any],
     ):
         self.id = id
         self.content = content
@@ -27,21 +28,33 @@ class BM25SearchResult:
 class BM25SearchService:
     """BM25 检索服务"""
 
-    async def search(self, query: str, top_k: int) -> List[BM25SearchResult]:
+    async def search(self, query: str, top_k: int) -> list[BM25SearchResult]:
+        return await asyncio.to_thread(self.search_sync, query, top_k)
+
+    def search_sync(self, query: str, top_k: int) -> list[BM25SearchResult]:
         if not query.strip():
             return []
 
-        client = es_client_manager.get_async_client()
+        client = es_client_manager.get_sync_client()
         body = {
             "size": top_k,
             "query": {"match": {"content": query}},
-            "_source": ["content", "source", "file_name", "extension", "h1", "h2", "h3", "metadata"],
+            "_source": [
+                "content",
+                "source",
+                "file_name",
+                "extension",
+                "h1",
+                "h2",
+                "h3",
+                "metadata",
+            ],
         }
 
-        response = await client.search(index=config.es_index, body=body)
+        response = client.search(index=config.es_index, body=body)
         hits = response.get("hits", {}).get("hits", [])
 
-        results: List[BM25SearchResult] = []
+        results: list[BM25SearchResult] = []
         for hit in hits:
             source = hit.get("_source", {})
             raw_metadata = source.get("metadata") or {}
