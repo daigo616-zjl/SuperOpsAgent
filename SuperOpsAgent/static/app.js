@@ -153,8 +153,9 @@ class SuperOpsAgentApp {
         
         // 点击外部关闭下拉菜单
         document.addEventListener('click', (e) => {
-            if (!this.modeSelectorBtn.contains(e.target) && 
-                !this.modeDropdown.contains(e.target)) {
+            const clickedModeButton = this.modeSelectorBtn?.contains(e.target);
+            const clickedModeDropdown = this.modeDropdown?.contains(e.target);
+            if (!clickedModeButton && !clickedModeDropdown) {
                 this.closeModeDropdown();
             }
         });
