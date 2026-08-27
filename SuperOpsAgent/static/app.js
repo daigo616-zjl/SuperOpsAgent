@@ -1,7 +1,7 @@
 // SuperOpsAgent 前端应用
 class SuperOpsAgentApp {
     constructor() {
-        this.apiBaseUrl = 'http://localhost:12000/api';
+        this.apiBaseUrl = `${window.location.origin}/api`;
         this.currentMode = 'quick'; // 'quick' 或 'stream'
         this.sessionId = this.generateSessionId();
         this.isStreaming = false;

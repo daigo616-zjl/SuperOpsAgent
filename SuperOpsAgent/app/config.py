@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     app_version: str = "1.0.0"
     debug: bool = False
     host: str = "0.0.0.0"
-    port: int = 12000
+    port: int = 18000
 
     # DashScope 配置
     dashscope_api_key: str = ""  # 默认空字符串，实际使用需从环境变量加载
@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     es_timeout: int = 10
     es_analyzer: str = "standard"
     es_search_analyzer: str = "standard"
+    es_required: bool = False
 
     # 文档分块配置
     chunk_max_size: int = 800
@@ -80,9 +81,9 @@ class Settings(BaseSettings):
 
     # MCP 服务配置
     mcp_cls_transport: str = "streamable-http"
-    mcp_cls_url: str = "http://localhost:8003/mcp"
+    mcp_cls_url: str = "http://localhost:18003/mcp"
     mcp_monitor_transport: str = "streamable-http"
-    mcp_monitor_url: str = "http://localhost:8004/mcp"
+    mcp_monitor_url: str = "http://localhost:18004/mcp"
 
     @property
     def mcp_servers(self) -> dict[str, dict[str, Any]]:

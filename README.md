@@ -45,13 +45,13 @@ flowchart LR
 
 | 服务 | 地址 | 说明 |
 | --- | --- | --- |
-| Web/API | `http://localhost:12000` | FastAPI 与静态页面 |
-| API 文档 | `http://localhost:12000/docs` | Swagger UI |
+| Web/API | `http://localhost:18000` | FastAPI 与静态页面 |
+| API 文档 | `http://localhost:18000/docs` | Swagger UI |
 | Elasticsearch | `http://localhost:9200` | 本地 Elasticsearch 9.x |
-| CLS MCP | `http://localhost:8003/mcp` | 模拟日志查询 |
-| Monitor MCP | `http://localhost:8004/mcp` | 模拟监控查询 |
+| CLS MCP | `http://localhost:18003/mcp` | 模拟日志查询 |
+| Monitor MCP | `http://localhost:18004/mcp` | 模拟监控查询 |
 
-项目使用 `12000` 作为默认 API 端口，避免部分 Windows/Hyper-V 环境保留
+项目使用 `18000` 作为默认 API 端口，避免部分 Windows/Hyper-V 环境保留
 `9808-10007` 端口段导致 `9900` 无法绑定。
 
 ## 快速开始：Windows
@@ -221,8 +221,8 @@ DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 | `RAG_RERANK_WARMUP_ENABLED` | `true` | 启动 API 或离线评测时是否提前预热重排模型 |
 | `RAG_RERANK_WARMUP_TIMEOUT` | `120` | 重排模型预热超时秒数 |
 | `RAG_QUERY_REWRITE_ENABLED` | `true` | 是否启用查询改写 |
-| `MCP_CLS_URL` | `http://localhost:8003/mcp` | CLS MCP 地址 |
-| `MCP_MONITOR_URL` | `http://localhost:8004/mcp` | Monitor MCP 地址 |
+| `MCP_CLS_URL` | `http://localhost:18003/mcp` | CLS MCP 地址 |
+| `MCP_MONITOR_URL` | `http://localhost:18004/mcp` | Monitor MCP 地址 |
 
 ## API
 

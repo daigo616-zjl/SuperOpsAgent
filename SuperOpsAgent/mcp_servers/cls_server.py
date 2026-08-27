@@ -6,6 +6,7 @@
 import logging
 import functools
 import json
+import os
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 from fastmcp import FastMCP
@@ -467,4 +468,9 @@ def search_log(
 
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http", host="127.0.0.1", port=8003, path="/mcp")
+    mcp.run(
+        transport="streamable-http",
+        host="127.0.0.1",
+        port=int(os.getenv("MCP_CLS_PORT", "18003")),
+        path="/mcp",
+    )

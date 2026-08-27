@@ -99,6 +99,13 @@ echo.
 
 REM 设置 Python 命令
 set PYTHON_CMD=.venv\Scripts\python.exe
+set API_PORT=18000
+set CLS_PORT=18003
+set MONITOR_PORT=18004
+set MCP_CLS_PORT=%CLS_PORT%
+set MCP_MONITOR_PORT=%MONITOR_PORT%
+set MCP_CLS_URL=http://127.0.0.1:%CLS_PORT%/mcp
+set MCP_MONITOR_URL=http://127.0.0.1:%MONITOR_PORT%/mcp
 
 REM 检查本地 Elasticsearch
 echo [4/8] 检查 Elasticsearch...
@@ -134,7 +141,7 @@ echo.
 
 REM 启动 FastAPI 服务
 echo [8/8] 启动 FastAPI 服务...
-start "SuperOpsAgent API" %PYTHON_CMD% -m uvicorn app.main:app --host 0.0.0.0 --port 12000
+start "SuperOpsAgent API" %PYTHON_CMD% -m uvicorn app.main:app --host 0.0.0.0 --port %API_PORT%
 echo [信息] 等待服务启动（15秒）...
 timeout /t 15 /nobreak >nul
 echo.
@@ -142,7 +149,7 @@ echo.
 REM 检查服务状态并上传文档
 echo.
 echo [信息] 检查服务状态...
-curl -fsS http://localhost:12000/api/health >nul 2>&1
+curl -fsS http://localhost:%API_PORT%/api/health >nul 2>&1
 if errorlevel 1 (
     echo [警告] 服务可能还未完全启动，请稍等片刻
 ) else (
@@ -153,7 +160,7 @@ if errorlevel 1 (
     echo [信息] 上传文档到向量数据库...
     for %%f in (aiops-docs\*.md) do (
         echo   上传: %%~nxf
-        curl -s -X POST http://localhost:12000/api/upload -F "file=@%%f" >nul 2>&1
+        curl -s -X POST http://localhost:%API_PORT%/api/upload -F "file=@%%f" >nul 2>&1
     )
     echo [成功] 文档上传完成
 )
@@ -162,8 +169,8 @@ echo.
 echo ====================================
 echo 服务启动完成！
 echo ====================================
-echo Web 界面: http://localhost:12000
-echo API 文档: http://localhost:12000/docs
+echo Web 界面: http://localhost:%API_PORT%
+echo API 文档: http://localhost:%API_PORT%/docs
 echo.
 echo 查看日志:
 echo   - FastAPI: logs\app_*.log（Loguru 日志，按天轮转）

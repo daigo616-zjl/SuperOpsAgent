@@ -34,8 +34,13 @@ async def lifespan(app: FastAPI):
     logger.info("✅ Milvus 连接成功")
 
     logger.info("🔌 正在连接 Elasticsearch...")
-    await es_client_manager.connect()
-    logger.info("✅ Elasticsearch 连接成功")
+    try:
+        await es_client_manager.connect()
+        logger.info("✅ Elasticsearch 连接成功")
+    except Exception as exc:
+        if config.es_required:
+            raise
+        logger.warning(f"⚠️ Elasticsearch 不可用，继续启动（ES_REQUIRED=false）: {exc}")
 
     logger.info("🔥 正在预热 Rerank 模型...")
     await rerank_service.warmup_async()
