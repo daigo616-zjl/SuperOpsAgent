@@ -46,3 +46,11 @@ def test_rag_generation_defaults_are_conservative() -> None:
     assert settings.rag_temperature == 0.1
     assert settings.rag_max_tokens == 1200
     assert settings.rag_enable_thinking is False
+
+
+def test_context_summary_defaults() -> None:
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.rag_context_summary_model == "qwen3.5-flash"
+    assert settings.rag_context_summary_trigger_messages == 12
+    assert settings.rag_context_summary_keep_messages == 6

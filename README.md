@@ -174,6 +174,9 @@ API Key 或其他凭据。
 | `RAG_TEMPERATURE` | `0.1` | RAG 回答采样温度；低值减少随机扩展 |
 | `RAG_MAX_TOKENS` | `1200` | RAG 单次回答最大输出 Token 数 |
 | `RAG_ENABLE_THINKING` | `false` | 是否启用扩展思考；默认关闭以减少发散 |
+| `RAG_CONTEXT_SUMMARY_MODEL` | `qwen3.5-flash` | 滚动摘要模型，建议使用轻量模型 |
+| `RAG_CONTEXT_SUMMARY_TRIGGER_MESSAGES` | `12` | 累积到多少条消息后触发滚动摘要 |
+| `RAG_CONTEXT_SUMMARY_KEEP_MESSAGES` | `6` | 摘要后保留最近消息条数 |
 | `RAG_QUERY_REWRITE_MODEL` | 空 | 空值时复用 RAG 主模型 |
 | `EVAL_MODEL` | `qwen-max` | 离线评测模型 |
 | `EVAL_METRIC_TIMEOUT` | `90` | 普通指标和单次评测 HTTP 请求超时秒数 |

@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     rag_temperature: float = 0.1
     rag_max_tokens: int = 1200
     rag_enable_thinking: bool = False
+    rag_context_summary_model: str = "qwen3.5-flash"
+    rag_context_summary_trigger_messages: int = 12
+    rag_context_summary_keep_messages: int = 6
     rag_recall_size: int = 20
     rag_rerank_enabled: bool = True
     rag_rerank_model: str = "BAAI/bge-reranker-base"
