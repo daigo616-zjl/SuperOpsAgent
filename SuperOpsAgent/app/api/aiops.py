@@ -41,8 +41,21 @@ async def diagnose_stream(request: AIOpsRequest):
          "type": "plan",
          "stage": "plan_created",
          "message": "诊断计划已制定，共 6 个步骤",
-         "target_alert": {...},
-         "plan": ["步骤1: ...", "步骤2: ..."]
+         "plan": {
+           "goal": "诊断目标服务告警",
+           "steps": [
+             {
+               "id": "query_cpu",
+               "title": "查询 CPU 指标",
+               "tool_call": {
+                 "tool_name": "query_cpu_metrics",
+                 "arguments": {
+                   "service_name": {"source": "context", "path": "service_name"}
+                 }
+               }
+             }
+           ]
+         }
        }
        ```
 
@@ -90,9 +103,9 @@ async def diagnose_stream(request: AIOpsRequest):
 
     **使用示例：**
     ```bash
-    curl -X POST "http://localhost:12000/api/aiops" \\
+    curl -X POST "http://localhost:18000/api/aiops" \\
       -H "Content-Type: application/json" \\
-      -d '{"session_id": "session-123"}' \\
+      -d '{"session_id": "session-123", "service_name": "data-sync-service"}' \\
       --no-buffer
     ```
 
@@ -127,12 +140,12 @@ async def diagnose_stream(request: AIOpsRequest):
 
     async def event_generator():
         try:
-            async for event in aiops_service.diagnose(session_id=session_id):
+            async for event in aiops_service.diagnose(
+                session_id=session_id,
+                service_name=request.service_name,
+            ):
                 # 发送事件
-                yield {
-                    "event": "message",
-                    "data": json.dumps(event, ensure_ascii=False)
-                }
+                yield {"event": "message", "data": json.dumps(event, ensure_ascii=False)}
 
                 # 如果是完成或错误事件，结束流
                 if event.get("type") in ["complete", "error"]:
@@ -144,11 +157,10 @@ async def diagnose_stream(request: AIOpsRequest):
             logger.error(f"[会话 {session_id}] AIOps 诊断流式响应异常: {e}", exc_info=True)
             yield {
                 "event": "message",
-                "data": json.dumps({
-                    "type": "error",
-                    "stage": "exception",
-                    "message": f"诊断异常: {str(e)}"
-                }, ensure_ascii=False)
+                "data": json.dumps(
+                    {"type": "error", "stage": "exception", "message": f"诊断异常: {str(e)}"},
+                    ensure_ascii=False,
+                ),
             }
 
     return EventSourceResponse(event_generator())

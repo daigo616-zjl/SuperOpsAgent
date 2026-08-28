@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any
@@ -99,9 +100,20 @@ class ResilientChatModel(Runnable[Any, Any]):
             status = int(status)
         if isinstance(status, int):
             return status == 429 or status >= 500
-        return isinstance(error, (TimeoutError, asyncio.TimeoutError, OSError)) or any(
-            marker in str(error).lower()
-            for marker in ("timeout", "timed out", "connection", "connection reset", "429")
+        message = str(error).lower()
+        return (
+            isinstance(error, (TimeoutError, asyncio.TimeoutError, OSError))
+            or re.search(r"\b(?:429|5\d{2})\b", message) is not None
+            or any(
+                marker in message
+                for marker in (
+                    "timeout",
+                    "timed out",
+                    "connection",
+                    "connection reset",
+                    "server error",
+                )
+            )
         )
 
     async def _call(self, operation: Callable[[], Any]) -> Any:
@@ -135,7 +147,11 @@ class ResilientChatModel(Runnable[Any, Any]):
         except Exception as primary_error:
             if self.fallback is None:
                 raise
-            logger.warning("Primary LLM failed; using fallback model {}: {}", self.fallback.model_name, primary_error)
+            logger.warning(
+                "Primary LLM failed; using fallback model {}: {}",
+                self.fallback.model_name,
+                primary_error,
+            )
             return await self.fallback.ainvoke(input, config=config, **kwargs)
 
     def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
@@ -144,6 +160,7 @@ class ResilientChatModel(Runnable[Any, Any]):
     async def astream(self, input: Any, config: Any = None, **kwargs: Any) -> AsyncIterator[Any]:
         await self.breaker.before_call()
         attempts = self.max_retries + 1
+        last_error: Exception | None = None
         for attempt in range(attempts):
             emitted = False
             try:
@@ -154,14 +171,21 @@ class ResilientChatModel(Runnable[Any, Any]):
                 await self.breaker.success()
                 return
             except Exception as error:
+                last_error = error
                 await self.breaker.failure()
                 if emitted or not self._is_retryable(error) or attempt == attempts - 1:
                     break
                 await asyncio.sleep(self.retry_backoff * (2**attempt))
 
+        if last_error is None:
+            raise RuntimeError("LLM streaming ended without a result or an error")
         if self.fallback is None:
-            raise error
-        logger.warning("Primary streaming LLM failed; using fallback model {}: {}", self.fallback.model_name, error)
+            raise last_error
+        logger.warning(
+            "Primary streaming LLM failed; using fallback model {}: {}",
+            self.fallback.model_name,
+            last_error,
+        )
         async for chunk in self.fallback.astream(input, config=config, **kwargs):
             yield chunk
 
@@ -170,7 +194,9 @@ class ResilientChatModel(Runnable[Any, Any]):
         return self._wrap(self.model.bind_tools(tools, **kwargs), fallback)
 
     def with_structured_output(self, schema: Any, **kwargs: Any) -> ResilientChatModel:
-        fallback = self.fallback.model.with_structured_output(schema, **kwargs) if self.fallback else None
+        fallback = (
+            self.fallback.model.with_structured_output(schema, **kwargs) if self.fallback else None
+        )
         return self._wrap(self.model.with_structured_output(schema, **kwargs), fallback)
 
     def _wrap(self, bound_model: Any, bound_fallback: Any = None) -> ResilientChatModel:
@@ -181,7 +207,9 @@ class ResilientChatModel(Runnable[Any, Any]):
             max_retries=self.max_retries,
             rate_limiter=self.rate_limiter,
             breaker=self.breaker,
-            fallback=self.fallback._wrap(bound_fallback) if self.fallback and bound_fallback else None,
+            fallback=(
+                self.fallback._wrap(bound_fallback) if self.fallback and bound_fallback else None
+            ),
             retry_backoff=self.retry_backoff,
         )
 

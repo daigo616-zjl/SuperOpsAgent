@@ -2,7 +2,12 @@ import asyncio
 
 import pytest
 
-from app.core.llm_resilience import CircuitOpenError, ResilientChatModel, _CircuitBreaker, _RateLimiter
+from app.core.llm_resilience import (
+    CircuitOpenError,
+    ResilientChatModel,
+    _CircuitBreaker,
+    _RateLimiter,
+)
 
 
 class FakeModel:

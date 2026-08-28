@@ -12,11 +12,11 @@ def test_dashscope_api_base_defaults_to_beijing() -> None:
 
 
 def test_qwen_factory_passes_configured_api_base(monkeypatch) -> None:
-    captured: dict[str, Any] = {}
+    captured: list[dict[str, Any]] = []
 
     class FakeChatQwen:
         def __init__(self, **kwargs: Any) -> None:
-            captured.update(kwargs)
+            captured.append(kwargs)
 
     monkeypatch.setattr(llm_factory_module, "ChatQwen", FakeChatQwen)
     monkeypatch.setattr(config, "dashscope_api_base", "https://example.test/v1")
@@ -30,13 +30,19 @@ def test_qwen_factory_passes_configured_api_base(monkeypatch) -> None:
         enable_thinking=False,
     )
 
-    assert captured["base_url"] == "https://example.test/v1"
-    assert captured["api_key"].get_secret_value() == "test-key"
-    assert captured["model"] == "test-model"
-    assert captured["temperature"] == 0.1
-    assert captured["streaming"] is True
-    assert captured["max_tokens"] == 1200
-    assert captured["enable_thinking"] is False
+    primary = captured[0]
+    assert primary["base_url"] == "https://example.test/v1"
+    assert primary["api_key"].get_secret_value() == "test-key"
+    assert primary["model"] == "test-model"
+    assert primary["temperature"] == 0.1
+    assert primary["streaming"] is True
+    assert primary["max_tokens"] == 1200
+    assert primary["enable_thinking"] is False
+
+    assert len(captured) == 2
+    fallback = captured[1]
+    assert fallback["model"] == config.llm_fallback_model
+    assert fallback["base_url"] == "https://example.test/v1"
 
 
 def test_rag_generation_defaults_are_conservative() -> None:

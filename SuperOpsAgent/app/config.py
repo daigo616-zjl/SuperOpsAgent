@@ -104,6 +104,9 @@ class Settings(BaseSettings):
     mcp_monitor_transport: str = "streamable-http"
     mcp_monitor_url: str = "http://localhost:18004/mcp"
 
+    # AIOps 诊断默认上下文
+    aiops_default_service_name: str = "data-sync-service"
+
     @property
     def mcp_servers(self) -> dict[str, dict[str, Any]]:
         """获取完整的 MCP 服务器配置"""

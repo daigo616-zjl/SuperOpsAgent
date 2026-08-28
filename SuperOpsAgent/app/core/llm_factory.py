@@ -56,11 +56,18 @@ class LLMFactory:
                 api_key=resolved_api_key,
                 extra_body=extra_body if extra_body else None,
             )
-        return build_resilient_model(llm, model_name=model, timeout=config.llm_timeout,
-            max_retries=config.llm_max_retries, max_concurrency=config.llm_max_concurrency,
-            min_interval=config.llm_min_interval, failure_threshold=config.llm_circuit_failure_threshold,
-            recovery_timeout=config.llm_circuit_recovery_timeout, retry_backoff=config.llm_retry_backoff,
-            fallback=fallback)
+        return build_resilient_model(
+            llm,
+            model_name=model,
+            timeout=config.llm_timeout,
+            max_retries=config.llm_max_retries,
+            max_concurrency=config.llm_max_concurrency,
+            min_interval=config.llm_min_interval,
+            failure_threshold=config.llm_circuit_failure_threshold,
+            recovery_timeout=config.llm_circuit_recovery_timeout,
+            retry_backoff=config.llm_retry_backoff,
+            fallback=fallback,
+        )
 
     @staticmethod
     def create_qwen_chat_model(
@@ -84,15 +91,27 @@ class LLMFactory:
         )
         fallback = None
         if config.llm_fallback_model and config.llm_fallback_model != model:
-            fallback = ChatQwen(model=config.llm_fallback_model, temperature=temperature, streaming=streaming,
-                max_tokens=max_tokens, enable_thinking=enable_thinking,
+            fallback = ChatQwen(
+                model=config.llm_fallback_model,
+                temperature=temperature,
+                streaming=streaming,
+                max_tokens=max_tokens,
+                enable_thinking=enable_thinking,
                 base_url=base_url or config.dashscope_api_base,
-                api_key=SecretStr(api_key or config.dashscope_api_key))
-        return build_resilient_model(llm, model_name=model, timeout=config.llm_timeout,
-            max_retries=config.llm_max_retries, max_concurrency=config.llm_max_concurrency,
-            min_interval=config.llm_min_interval, failure_threshold=config.llm_circuit_failure_threshold,
-            recovery_timeout=config.llm_circuit_recovery_timeout, retry_backoff=config.llm_retry_backoff,
-            fallback=fallback)
+                api_key=SecretStr(api_key or config.dashscope_api_key),
+            )
+        return build_resilient_model(
+            llm,
+            model_name=model,
+            timeout=config.llm_timeout,
+            max_retries=config.llm_max_retries,
+            max_concurrency=config.llm_max_concurrency,
+            min_interval=config.llm_min_interval,
+            failure_threshold=config.llm_circuit_failure_threshold,
+            recovery_timeout=config.llm_circuit_recovery_timeout,
+            retry_backoff=config.llm_retry_backoff,
+            fallback=fallback,
+        )
 
 
 # 全局 LLM 工厂实例

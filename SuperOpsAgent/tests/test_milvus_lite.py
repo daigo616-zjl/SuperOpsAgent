@@ -2,7 +2,7 @@ from pathlib import Path
 
 from app.config import Settings, config
 from app.core.es_client import EsClientManager
-from app.core.milvus_client import MilvusClientManager
+from app.core.milvus_client import MilvusClientManager, milvus_manager
 
 
 def test_milvus_lite_settings_defaults() -> None:
@@ -15,6 +15,9 @@ def test_milvus_lite_settings_defaults() -> None:
 
 
 def test_milvus_lite_creates_collection(tmp_path: Path, monkeypatch) -> None:
+    # 其他测试导入向量存储服务时可能已经打开全局 default 别名。
+    # 本测试需要切换到独立临时数据库，因此先完整释放全局 manager。
+    milvus_manager.close()
     database_path = tmp_path / "milvus-test.db"
     monkeypatch.setattr(config, "milvus_lite_path", str(database_path))
     monkeypatch.setattr(config, "milvus_lite_db_name", "default")

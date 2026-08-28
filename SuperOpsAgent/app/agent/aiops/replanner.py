@@ -1,8 +1,6 @@
-"""
-Replanner 节点：重新规划或生成最终响应
-基于 LangGraph 官方教程实现
-"""
+"""Replanner 节点：依据结构化执行结果继续、重规划或生成报告。"""
 
+import json
 from textwrap import dedent
 from typing import Any
 
@@ -11,101 +9,57 @@ from langchain_qwq import ChatQwen
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from app.agent.mcp_client import get_mcp_client_with_retry
 from app.config import config
 from app.core.llm_factory import LLMFactory
-from app.tools import get_current_time, retrieve_knowledge
 
+from .models import DiagnosticPlan, DiagnosticStep, ReplanDecision
 from .state import PlanExecuteState
-from .utils import format_tools_description
+from .tool_registry import get_tool_registry
 
 
 class Response(BaseModel):
-    """最终响应的格式"""
-
-    response: str = Field(description="对用户的最终响应")
+    response: str = Field(description="基于实际工具结果生成的最终 Markdown 响应")
 
 
-class Act(BaseModel):
-    """重新规划的输出格式"""
-
-    action: str = Field(
-        description="""下一步的行动，必须是以下三种之一：
-        - 'continue': 当前计划合理，继续执行下一个步骤
-        - 'replan': 当前计划需要调整，提供新的步骤列表
-        - 'respond': 计划已完成且信息充足，生成最终响应"""
-    )
-    # action 为 'replan' 时，新的步骤列表（会替换当前剩余计划）
-    new_steps: list[str] = Field(
-        default_factory=list,
-        description="新的步骤列表（如果 action 是 'replan'，这些步骤会替换剩余计划）",
-    )
-
-
-# Replanner 提示词
 replanner_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
             dedent("""
-                作为一个重新规划专家，你需要根据已执行的步骤决定下一步行动。
+                你是运维诊断 Replanner。你只能依据结构化计划与执行结果决定：
+                continue、replan 或 respond，不执行工具。
 
-                可用工具列表（用于制定计划时参考）：
+                诊断上下文：
+                {diagnosis_context}
 
-                {tools_description}
+                可用工具注册表：
+                {tool_registry}
 
-                注意：你的职责是制定或调整计划，实际的工具调用由 Executor 负责执行。
-
-                你有三个选择（按优先级排序）：
-
-                **1. 'respond' - 信息充足，立即生成最终响应** 【最高优先级】
-                   - 使用场景：当前信息已经足够回答用户问题
-                   - 决策标准：
-                     * 已执行步骤 >= 3 且获取了关键信息
-                     * 或者已执行步骤 >= 5（无论结果如何）
-                     * 或者当前信息完全满足任务需求
-                   - ⚠️ 不要等到"完美"才响应，"足够好"就应该立即 respond
-
-                **2. 'continue' - 当前计划合理，继续执行** 【次优先级】
-                   - 使用场景：剩余计划合理且必要
-                   - 决策标准：剩余步骤确实能提供关键信息
-                   - ⚠️ 如果剩余步骤不是"必需"的，应选择 respond
-
-                **3. 'replan' - 当前计划有严重问题** 【最低优先级，谨慎使用】
-                   - 使用场景：原计划明显错误或遗漏关键步骤
-                   - ⚠️ **严格限制**：
-                     * 新步骤数量必须 <= 当前剩余步骤数
-                     * 优先简化计划，不要添加不必要的步骤
-                     * 总步骤数已执行 >= 5 次时，禁止 replan，只能 respond
-
-                评估标准：
-                - 当前信息是否已经足够解决用户问题？【最关键】
-                - 已执行步骤是否成功获取了核心信息？
-                - 剩余步骤是否真的"必需"？
-                - 已执行步骤数是否过多（>= 5）？如果是，立即 respond
-
-                **决策优先级口诀：**
-                "优先结束 > 保持不变 > 调整计划"
-                "信息足够就响应，不要追求完美"
+                决策规则：
+                - 信息足以回答原始任务时 respond。
+                - 剩余步骤仍然必要且可执行时 continue。
+                - 工具无效、参数无效、关键步骤失败，或现有计划不能继续时 replan。
+                - replan 时 updated_steps 只包含新的未执行步骤，每步一次工具调用。
+                - updated_steps 的 id 不得与已执行步骤 id 重复；重试需使用新的 id。
+                - 服务名必须通过 context 引用，不得写死。
+                - 步骤 id 使用英文字母开头，只包含英文字母、数字、下划线或连字符。
+                - 数值引用需要偏移时使用 offset，例如时间戳减 15 分钟为 -900000。
+                - 不得把失败结果描述成成功，也不得编造工具输出。
             """).strip(),
         ),
         ("placeholder", "{messages}"),
     ]
 )
 
-# 最终响应生成提示词
+
 response_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
             dedent("""
-                根据原始任务和已执行步骤的结果，生成一个全面的最终响应。
-
-                响应要求：
-                - 清晰、结构化
-                - 基于实际数据，不要编造
-                - 如果某些步骤失败，要诚实说明
-                - 使用 Markdown 格式
+                根据原始任务、诊断上下文、结构化计划和结构化执行结果生成最终响应。
+                使用 Markdown；只引用真实工具输出；明确标注失败、阻塞和缺失证据。
+                诊断结论要区分已证实事实、合理推断和无法确认的事项。
             """).strip(),
         ),
         ("placeholder", "{messages}"),
@@ -114,209 +68,150 @@ response_prompt = ChatPromptTemplate.from_messages(
 
 
 async def replanner(state: PlanExecuteState) -> dict[str, Any]:
-    """
-    重新规划节点：决定是继续、调整计划还是生成最终响应
+    logger.info("=== Replanner：评估结构化执行结果 ===")
+    if state.get("response"):
+        return {}
 
-    三种决策：
-    1. continue - 继续执行当前计划
-    2. replan - 调整计划（替换剩余步骤）
-    3. respond - 生成最终响应
-    """
-    logger.info("=== Replanner：重新规划 ===")
+    plan = state.get("plan")
+    results = state.get("execution_results", [])
+    if plan is None:
+        return {"response": "诊断未能生成有效执行计划。"}
 
-    input_text = state.get("input", "")
-    plan = state.get("plan", [])
-    past_steps = state.get("past_steps", [])
+    result_by_id = {result.step_id: result for result in results}
+    pending = [step for step in plan.steps if step.id not in result_by_id]
+    latest = results[-1] if results else None
+    step_by_id = {step.id: step for step in plan.steps}
 
-    logger.info(f"剩余计划步骤: {len(plan)}")
-    logger.info(f"已执行步骤: {len(past_steps)}")
-
-    # ⚠️ 强制限制：如果已执行步骤过多，直接生成响应
-    MAX_STEPS = 8
-    if len(past_steps) >= MAX_STEPS:
-        logger.warning(
-            f"已执行 {len(past_steps)} 个步骤，超过最大限制 {MAX_STEPS}，强制生成最终响应"
-        )
-        llm = LLMFactory.create_qwen_chat_model(model=config.rag_model, temperature=0)
-        return await _generate_response(state, llm)
-
-    # 获取可用工具列表
-    try:
-        # 获取本地工具
-        local_tools = [get_current_time, retrieve_knowledge]
-
-        # 获取 MCP 工具
-        mcp_client = await get_mcp_client_with_retry()
-        mcp_tools = await mcp_client.get_tools()
-
-        # 合并所有工具
-        all_tools = local_tools + mcp_tools
-        logger.info(f"可用工具数量: 本地 {len(local_tools)} + MCP {len(mcp_tools)}")
-
-        # 格式化工具描述
-        tools_description = format_tools_description(all_tools)
-    except Exception as e:
-        logger.warning(f"获取工具列表失败: {e}")
-        tools_description = "无法获取工具列表"
-
-    # 创建 LLM
     llm = LLMFactory.create_qwen_chat_model(model=config.rag_model, temperature=0)
 
-    # 格式化已执行的步骤
-    steps_summary = "\n".join(
-        [f"步骤: {step}\n结果: {result[:300]}..." for step, result in past_steps]
-    )
-
-    # 如果还有剩余计划，进行决策
-    if plan:
-        logger.info("还有剩余计划，评估下一步行动")
-
-        replanner_chain = replanner_prompt | llm.with_structured_output(Act)
-
-        try:
-            messages = [
-                ("user", f"原始任务: {input_text}"),
-                ("user", f"已执行的步骤:\n{steps_summary}"),
-                ("user", f"剩余计划: {', '.join(plan)}"),
-                (
-                    "user",
-                    f"⚠️ 重要提示：已执行 {len(past_steps)} 个步骤，请优先考虑是否信息已足够生成响应（respond）",
-                ),
-            ]
-
-            act = await replanner_chain.ainvoke(
-                {"messages": messages, "tools_description": tools_description}
-            )
-
-            # 处理返回结果
-            if isinstance(act, Act):
-                action = act.action
-                new_steps = act.new_steps
-            else:
-                # 如果返回的是字典
-                action = act.get("action", "continue")  # type: ignore
-                new_steps = act.get("new_steps", [])  # type: ignore
-
-            logger.info(f"Replanner 决策: {action}")
-
-            if action == "respond":
-                logger.info("决定生成最终响应")
-                return await _generate_response(state, llm)
-
-            elif action == "replan":
-                # ⚠️ 强制限制：新步骤数不能超过当前剩余步骤数
-                if len(new_steps) > len(plan):
-                    logger.warning(
-                        f"新步骤数 {len(new_steps)} > 剩余步骤数 {len(plan)}，"
-                        f"强制截断为 {len(plan)} 个步骤"
-                    )
-                    new_steps = new_steps[: len(plan)]
-
-                # ⚠️ 二次检查：如果已执行步骤 >= 5，禁止 replan
-                if len(past_steps) >= 5:
-                    logger.warning(f"已执行 {len(past_steps)} 个步骤，禁止重新规划，强制生成响应")
-                    return await _generate_response(state, llm)
-
-                logger.info(f"决定调整计划，新步骤数量: {len(new_steps)}")
-                if new_steps:
-                    # 替换剩余计划
-                    return {"plan": new_steps}
-                else:
-                    logger.warning("replan 但未提供新步骤，继续执行原计划")
-                    return {}
-
-            else:  # action == "continue"
-                logger.info("决定继续执行当前计划")
-                return {}  # 不修改状态，继续执行
-
-        except Exception as e:
-            logger.error(f"重新规划失败: {e}, 继续执行剩余计划")
-            return {}
-
-    else:
-        # 没有剩余计划，生成最终响应
-        logger.info("计划已执行完毕，生成最终响应")
+    if not pending:
         return await _generate_response(state, llm)
+
+    if latest is not None:
+        latest_step = step_by_id.get(latest.step_id)
+        if latest_step and latest.status != "succeeded":
+            if latest_step.failure_policy == "stop":
+                return await _generate_response(state, llm)
+            if latest_step.failure_policy == "continue":
+                return {}
+
+    if len(results) >= 8 or state.get("replan_count", 0) >= 2:
+        return await _generate_response(state, llm)
+
+    try:
+        registry = await get_tool_registry()
+        chain = replanner_prompt | llm.with_structured_output(ReplanDecision)
+        decision = await chain.ainvoke(
+            {
+                "messages": [
+                    ("user", f"原始任务：{state.get('input', '')}"),
+                    ("user", f"完整计划：{plan.model_dump_json(indent=2)}"),
+                    ("user", f"执行结果：{_results_json(results)}"),
+                    ("user", f"剩余步骤：{_steps_json(pending)}"),
+                ],
+                "diagnosis_context": state["context"].model_dump_json(indent=2),
+                "tool_registry": registry.prompt_description(),
+            }
+        )
+        if isinstance(decision, dict):
+            decision = ReplanDecision.model_validate(decision)
+        if not isinstance(decision, ReplanDecision):
+            raise ValueError("Replanner 未返回有效决策")
+
+        logger.info(f"Replanner 决策={decision.action}, 原因={decision.reason}")
+        if decision.action == "respond":
+            return await _generate_response(state, llm)
+        if decision.action == "continue":
+            return {}
+        return _apply_replan(state, decision.updated_steps, registry)
+    except Exception as exc:
+        logger.error(f"Replanner 决策失败: {exc}", exc_info=True)
+        if latest is not None and latest.status != "succeeded":
+            return await _generate_response(state, llm)
+        return {}
+
+
+def _apply_replan(
+    state: PlanExecuteState,
+    updated_steps: list[DiagnosticStep],
+    registry: Any,
+) -> dict:
+    if not updated_steps:
+        raise ValueError("replan 决策没有提供替代步骤")
+
+    plan = state["plan"]
+    assert plan is not None
+    completed_ids = {result.step_id for result in state.get("execution_results", [])}
+    completed_steps = [step for step in plan.steps if step.id in completed_ids]
+    if len(updated_steps) > len(plan.steps):
+        raise ValueError("重新规划的步骤数量超过原计划上限")
+
+    new_plan = DiagnosticPlan(goal=plan.goal, steps=completed_steps + updated_steps)
+    registry.validate_plan(new_plan)
+    return {
+        "plan": new_plan,
+        "replan_count": state.get("replan_count", 0) + 1,
+    }
 
 
 async def _generate_response(state: PlanExecuteState, llm: ChatQwen) -> dict[str, Any]:
-    """生成最终响应"""
-    logger.info("生成最终响应...")
-
-    input_text = state.get("input", "")
-    past_steps = state.get("past_steps", [])
-
-    # 格式化执行历史
-    execution_history = "\n\n".join(
-        [f"### 步骤: {step}\n**结果:**\n{result}" for step, result in past_steps]
-    )
-
-    response_gen = response_prompt | llm.with_structured_output(Response)
-
+    plan = state.get("plan")
+    messages = [
+        ("user", f"原始任务：{state.get('input', '')}"),
+        ("user", f"诊断上下文：{state['context'].model_dump_json(indent=2)}"),
+        ("user", f"执行计划：{plan.model_dump_json(indent=2) if plan else '无'}"),
+        ("user", f"执行结果：{_results_json(state.get('execution_results', []))}"),
+        ("user", "请生成最终诊断报告。"),
+    ]
     try:
-        messages = [
-            ("user", f"原始任务: {input_text}"),
-            ("user", f"执行历史:\n{execution_history}"),
-            ("user", "请基于以上信息生成全面的最终响应"),
-        ]
-
+        response_gen = response_prompt | llm.with_structured_output(Response)
         response_obj = await response_gen.ainvoke({"messages": messages})
-
-        # 处理不同模型适配器的返回结果。部分 Qwen structured output
-        # 适配器在解析失败时会返回 None，而不是抛出异常。
-        if isinstance(response_obj, Response):
-            final_response = response_obj.response
-        elif isinstance(response_obj, dict):
-            final_response = response_obj.get("response", "")
-        elif response_obj is not None and hasattr(response_obj, "content"):
-            final_response = response_obj.content
-        else:
-            raise ValueError("结构化响应为空，无法提取 response 字段")
-
-        if not isinstance(final_response, str) or not final_response.strip():
-            raise ValueError("模型返回的最终响应为空")
-
-        logger.info(f"最终响应生成完成，长度: {len(final_response)}")
-
-        return {"response": final_response}
-
-    except Exception as e:
-        logger.error(f"结构化响应生成失败: {e}")
-
-        # 结构化输出解析失败时，使用同一模型的普通文本输出作为降级路径，
-        # 避免将可用的 MCP 结果直接替换成“无法生成完整响应”。
+        if isinstance(response_obj, dict):
+            response_obj = Response.model_validate(response_obj)
+        if not isinstance(response_obj, Response) or not response_obj.response.strip():
+            raise ValueError("结构化最终响应为空")
+        return {"response": response_obj.response}
+    except Exception as exc:
+        logger.error(f"结构化最终响应生成失败: {exc}")
         try:
             plain_response = await llm.ainvoke(messages)
-            plain_content = getattr(plain_response, "content", plain_response)
-            if isinstance(plain_content, str) and plain_content.strip():
-                logger.info(f"普通文本响应生成完成，长度: {len(plain_content)}")
-                return {"response": plain_content}
-        except Exception as fallback_error:
-            logger.error(f"普通文本响应降级也失败: {fallback_error}")
-
-        # 模型完全不可用时，才生成简单的后备响应
-        fallback_response = f"""# 任务执行结果
-
-## 原始任务
-{input_text}
-
-## 执行的步骤
-{_format_simple_steps(past_steps)}
-
-## 说明
-由于系统异常，无法生成完整响应。以上是已收集的信息。
-"""
-        return {"response": fallback_response}
+            content = getattr(plain_response, "content", plain_response)
+            if isinstance(content, str) and content.strip():
+                return {"response": content}
+        except Exception as fallback_exc:
+            logger.error(f"普通文本响应降级失败: {fallback_exc}")
+        return {"response": _fallback_response(state)}
 
 
-def _format_simple_steps(past_steps: list) -> str:
-    """格式化步骤列表（简单版）"""
-    if not past_steps:
-        return "无"
+def _results_json(results: list) -> str:
+    return json.dumps(
+        [result.model_dump(mode="json") for result in results],
+        ensure_ascii=False,
+        indent=2,
+        default=str,
+    )
 
-    formatted = []
-    for i, (step, result) in enumerate(past_steps, 1):
-        result_preview = result[:200] + "..." if len(result) > 200 else result
-        formatted.append(f"{i}. **{step}**\n   {result_preview}\n")
 
-    return "\n".join(formatted)
+def _steps_json(steps: list[DiagnosticStep]) -> str:
+    return json.dumps(
+        [step.model_dump(mode="json") for step in steps],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _fallback_response(state: PlanExecuteState) -> str:
+    results = state.get("execution_results", [])
+    lines = ["# 诊断执行结果", "", f"目标服务：{state['context'].service_name}", ""]
+    for result in results:
+        lines.extend(
+            [
+                f"## {result.step_title}",
+                f"- 状态：{result.status}",
+                f"- 工具：{result.tool_name}",
+                f"- 输出：`{json.dumps(result.output, ensure_ascii=False, default=str)}`",
+                f"- 错误：{result.error.message if result.error else '无'}",
+                "",
+            ]
+        )
+    return "\n".join(lines)

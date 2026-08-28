@@ -12,7 +12,8 @@ Elasticsearch 使用本机服务，CLS 与 Monitor MCP 返回模拟数据。
 - RAG 问答：向量召回与 Elasticsearch BM25 双路检索。
 - 混合排序：支持 RRF 融合、Cross-Encoder 重排序和查询改写。
 - 文档知识库：上传 Markdown 文档后自动分块并建立向量及全文索引。
-- AIOps 诊断：使用 Plan-Execute-Replan 工作流调用日志和监控 MCP 工具。
+- AIOps 诊断：Planner 生成结构化计划，Executor 确定性调用日志和监控工具，
+  Replanner 根据结构化结果继续、调整或结束诊断。
 - 流式输出：聊天和 AIOps 诊断均支持 SSE。
 - 离线评测：内置 Ragas 数据集加载、执行和 JSON 报告输出。
 - 本地运行：Milvus Lite 无需独立服务。
@@ -29,9 +30,14 @@ flowchart LR
     F --> L["DashScope LLM"]
     L --> A["回答"]
 
-    O["AIOps 诊断请求"] --> P["LangGraph 规划"]
-    P --> M["CLS / Monitor MCP"]
-    M --> R["复盘与诊断建议"]
+    O["AIOps 诊断请求"] --> C["DiagnosisContext"]
+    C --> P["Planner：结构化计划"]
+    P --> X["Executor：校验并调用工具"]
+    X --> M["CLS / Monitor MCP"]
+    M --> S["结构化执行结果"]
+    S --> R["Replanner：继续 / 重规划 / 响应"]
+    R -->|continue / replan| X
+    R -->|respond| A2["诊断报告"]
 ```
 
 ## 环境要求
@@ -117,7 +123,7 @@ python mcp_servers\monitor_server.py
 ```
 
 ```powershell
-python -m uvicorn app.main:app --host 0.0.0.0 --port 12000
+python -m uvicorn app.main:app --host 0.0.0.0 --port 18000
 ```
 
 Linux/macOS 可使用对应的 `/` 路径，也可以执行：
@@ -151,9 +157,55 @@ aiops-docs/
 手动上传单个文件：
 
 ```powershell
-curl.exe -X POST http://localhost:12000/api/upload `
+curl.exe -X POST http://localhost:18000/api/upload `
   -F "file=@aiops-docs/test_knowledge.md"
 ```
+
+## AIOps 结构化执行模型
+
+AIOps 工作流不再让 Executor 从中文步骤中猜测工具和参数。三个节点的职责如下：
+
+- Planner 根据诊断目标、`DiagnosisContext`、工具注册表及运维知识生成
+  `DiagnosticPlan`。每个步骤明确声明工具、参数、依赖、成功标准和失败策略。
+- Executor 不调用 LLM，也不分析中文关键词；它只校验工具、解析参数引用、校验
+  参数 Schema、调用工具并记录 `StepExecutionResult`。
+- Replanner 根据完整计划和结构化执行结果返回 `continue`、`replan` 或 `respond`。
+
+一个计划步骤的简化示例如下：
+
+```json
+{
+  "id": "query_cpu",
+  "title": "查询目标服务 CPU 指标",
+  "purpose": "确认目标服务是否存在持续 CPU 高负载",
+  "tool_call": {
+    "tool_name": "query_cpu_metrics",
+    "arguments": {
+      "service_name": {
+        "source": "context",
+        "path": "service_name"
+      }
+    }
+  },
+  "depends_on": [],
+  "success_criteria": [
+    {
+      "path": "data_points",
+      "operator": "not_empty"
+    }
+  ],
+  "failure_policy": "replan"
+}
+```
+
+工具参数支持引用前置步骤输出。数值引用可以使用 `offset` 做加法偏移，例如查询
+最近 15 分钟日志时，将当前毫秒时间戳作为 `end_time`，并通过
+`"offset": -900000` 生成 `start_time`。Executor 只执行该结构化表达式，不包含
+监控或日志领域的硬编码分支。
+
+工具注册表由本地工具和 MCP 工具共同构建，向 Planner 和 Replanner 提供工具名、
+来源、描述和输入 JSON Schema，同时向 Executor 提供实际调用句柄。重复工具名、
+未知工具、缺失参数和非法参数都会形成明确的结构化失败结果。
 
 ## 配置
 
@@ -165,7 +217,7 @@ API Key 或其他凭据。
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `HOST` | `0.0.0.0` | API 监听地址 |
-| `PORT` | `12000` | API 端口 |
+| `PORT` | `18000` | API 端口 |
 | `DASHSCOPE_API_KEY` | 空 | 必填的 DashScope Key |
 | `DASHSCOPE_API_BASE` | 北京兼容模式地址 | DashScope Key 所属地域的 API 地址 |
 | `DASHSCOPE_MODEL` | `qwen-max` | 通用对话模型 |
@@ -234,6 +286,7 @@ DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 | `LLM_FALLBACK_MODEL` | `qwen-turbo` | 主模型失败后的备用模型 |
 | `MCP_CLS_URL` | `http://localhost:18003/mcp` | CLS MCP 地址 |
 | `MCP_MONITOR_URL` | `http://localhost:18004/mcp` | Monitor MCP 地址 |
+| `AIOPS_DEFAULT_SERVICE_NAME` | `data-sync-service` | AIOps 请求未指定服务名时使用的默认目标服务 |
 
 ## API
 
@@ -251,7 +304,7 @@ DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 普通对话示例。请求字段支持代码定义的别名 `Id` 和 `Question`：
 
 ```powershell
-curl.exe -X POST http://localhost:12000/api/chat `
+curl.exe -X POST http://localhost:18000/api/chat `
   -H "Content-Type: application/json" `
   -d '{"Id":"demo-session","Question":"CPU 持续超过 90% 应该如何排查？"}'
 ```
@@ -259,16 +312,24 @@ curl.exe -X POST http://localhost:12000/api/chat `
 健康检查：
 
 ```powershell
-curl.exe http://localhost:12000/api/health
+curl.exe http://localhost:18000/api/health
 ```
 
 AIOps 诊断：
 
 ```powershell
-curl.exe -N -X POST http://localhost:12000/api/aiops `
+curl.exe -N -X POST http://localhost:18000/api/aiops `
   -H "Content-Type: application/json" `
-  -d '{"session_id":"aiops-demo"}'
+  -d '{"session_id":"aiops-demo","service_name":"data-sync-service"}'
 ```
+
+`service_name` 是可选字段。未传入时，服务端使用
+`AIOPS_DEFAULT_SERVICE_NAME`。请求解析完成后，服务名会写入统一的
+`DiagnosisContext`，Planner、Executor 和 Replanner 使用同一个上下文值。
+
+诊断过程中，SSE 的 `plan` 事件返回完整的结构化计划；`step_complete` 事件中的
+`result` 包含步骤 ID、工具名、解析后的参数、执行状态、工具输出、成功标准判定、
+错误和耗时。最终 `report` 与 `complete` 事件仍返回 Markdown 诊断报告。
 
 ## MCP 数据说明
 

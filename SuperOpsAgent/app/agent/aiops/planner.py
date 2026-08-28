@@ -1,61 +1,48 @@
-"""
-Planner 节点：制定执行计划
-基于 LangGraph 官方教程实现
-"""
+"""Planner 节点：生成可校验、可直接执行的结构化诊断计划。"""
 
 from textwrap import dedent
 from typing import Any
 
 from langchain_core.prompts import ChatPromptTemplate
 from loguru import logger
-from pydantic import BaseModel, Field
 
-from app.agent.mcp_client import get_mcp_client_with_retry
 from app.config import config
 from app.core.llm_factory import LLMFactory
-from app.tools import get_current_time, retrieve_knowledge
+from app.tools import retrieve_knowledge
 
+from .models import DiagnosticPlan
 from .state import PlanExecuteState
-from .utils import format_tools_description
+from .tool_registry import get_tool_registry
 
-
-class Plan(BaseModel):
-    """计划的输出格式"""
-
-    steps: list[str] = Field(
-        description="完成任务所需的不同步骤。这些步骤应该按顺序执行，每一步都建立在前一步的基础上。"
-    )
-
-
-# Planner 提示词
 planner_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
             dedent("""
-                作为一个专家级别的规划者，你需要将复杂的任务分解为可执行的步骤。
+                你是运维诊断 Planner，只负责生成结构化计划，不执行工具。
 
-                可用工具列表（用于制定计划时参考）：
+                诊断上下文：
+                {diagnosis_context}
 
-                {tools_description}
-
-                注意：你的职责是制定计划，实际的工具调用由 Executor 负责执行。
+                可用工具注册表（名称、用途、参数 JSON Schema）：
+                {tool_registry}
 
                 {experience_context}
 
-                对于给定的任务，请创建一个简单的、逐步的计划来完成它。计划应该：
-                - 将任务分解为逻辑上独立的步骤
-                - 每个步骤应该明确使用哪些工具(如果需要工具的话)来获取信息, 最好能同时提供工具执行所需要的参数
-                - 步骤之间应该有清晰的依赖关系
-                - 步骤描述要具体、可操作
-                - **如果有相关经验文档，请参考其中的方法和步骤制定计划**
-
-                示例输入："分析当前系统的性能问题"
-                示例输出（假设有对应工具）：
-                步骤1: 使用 get_metrics 工具收集系统的 CPU 和内存使用情况
-                步骤2: 使用 query_logs 工具检查最近的错误日志
-                步骤3: 使用 query_database 工具分析慢查询日志
-                步骤4: 综合以上信息生成性能分析报告
+                规划规则：
+                - 每个步骤只能调用一次工具；需要多个工具时拆成多个步骤。
+                - tool_name 必须来自工具注册表，arguments 必须符合对应 input_schema。
+                - 服务名统一引用上下文，参数值写成
+                  {{"source":"context","path":"service_name"}}，不要写死服务名。
+                - 后续步骤可引用前置步骤输出，格式为
+                  {{"source":"step","step_id":"步骤ID","path":"输出字段路径"}}。
+                  如果前置输出本身就是所需标量可省略 path；数值可用 offset 做加法偏移，
+                  例如当前毫秒时间戳减 15 分钟设置 offset=-900000。
+                - depends_on 使用步骤 id，且只能依赖之前声明的步骤。
+                - id 使用英文字母开头，只包含英文字母、数字、下划线或连字符。
+                - success_criteria 必须是 Executor 可机械判断的条件，不能写自然语言判断。
+                - success_criteria.path 是工具输出中的点分字段路径；整个输出可用 null。
+                - 不要加入“综合分析”或“生成报告”等无工具步骤，最终分析由 Replanner 完成。
             """).strip(),
         ),
         ("placeholder", "{messages}"),
@@ -64,91 +51,39 @@ planner_prompt = ChatPromptTemplate.from_messages(
 
 
 async def planner(state: PlanExecuteState) -> dict[str, Any]:
-    """
-    规划节点：根据用户输入生成执行计划
-
-    流程：
-    1. 先查询内部文档，获取相关经验和最佳实践
-    2. 基于经验文档和可用工具制定执行计划
-    """
-    logger.info("=== Planner：制定执行计划 ===")
-
+    logger.info("=== Planner：制定结构化执行计划 ===")
     input_text = state.get("input", "")
-    logger.info(f"用户输入: {input_text}")
+    context = state["context"]
 
     try:
-        # 步骤1: 查询内部文档获取相关经验
-        logger.info("查询内部文档，寻找相关经验...")
         experience_docs = ""
         try:
-            # retrieve_knowledge 使用 response_format="content_and_artifact"
-            # ainvoke() 只返回 content（字符串），不是元组
-            context_str = await retrieve_knowledge.ainvoke({"query": input_text})
-            if context_str and context_str.strip():
-                experience_docs = context_str
-                logger.info(f"找到相关经验文档，长度: {len(experience_docs)}")
-            else:
-                logger.info("未找到相关经验文档")
-        except Exception as e:
-            logger.warning(f"查询内部文档失败: {e}")
+            result = await retrieve_knowledge.ainvoke({"query": input_text})
+            if isinstance(result, str) and result.strip():
+                experience_docs = result
+        except Exception as exc:
+            logger.warning(f"查询内部经验失败: {exc}")
 
-        # 步骤2: 获取可用工具列表
-        # 获取本地工具
-        local_tools = [get_current_time, retrieve_knowledge]
-
-        # 获取 MCP 工具
-        mcp_client = await get_mcp_client_with_retry()
-        mcp_tools = await mcp_client.get_tools()
-
-        # 合并所有工具
-        all_tools = local_tools + mcp_tools
-        logger.info(f"可用工具数量: 本地 {len(local_tools)} + MCP {len(mcp_tools)}")
-
-        # 格式化工具描述
-        tools_description = format_tools_description(all_tools)
-
-        # 步骤3: 格式化经验文档上下文
-        if experience_docs:
-            experience_context = dedent(f"""
-                ## 相关经验文档
-
-                以下是从知识库中检索到的相关经验和最佳实践，请参考这些经验制定执行计划：
-
-                {experience_docs}
-
-                ---
-            """).strip()
-        else:
-            experience_context = ""
-
-        # 步骤4: 创建 LLM 并生成计划
+        registry = await get_tool_registry()
         llm = LLMFactory.create_qwen_chat_model(model=config.rag_model, temperature=0)
-
-        planner_chain = planner_prompt | llm.with_structured_output(Plan)
-
-        # 调用 LLM 生成计划
-        plan_result = await planner_chain.ainvoke(
+        chain = planner_prompt | llm.with_structured_output(DiagnosticPlan)
+        plan = await chain.ainvoke(
             {
                 "messages": [("user", input_text)],
-                "tools_description": tools_description,
-                "experience_context": experience_context,
+                "diagnosis_context": context.model_dump_json(indent=2),
+                "tool_registry": registry.prompt_description(),
+                "experience_context": (
+                    f"相关运维经验：\n{experience_docs}" if experience_docs else "无相关经验文档。"
+                ),
             }
         )
-
-        # 提取步骤列表
-        if isinstance(plan_result, Plan):
-            plan_steps = plan_result.steps
-        else:
-            # 如果返回的是字典，提取 steps 字段
-            plan_steps = plan_result.get("steps", [])  # type: ignore
-
-        logger.info(f"计划已生成，共 {len(plan_steps)} 个步骤")
-        for i, step in enumerate(plan_steps, 1):
-            logger.info(f"  步骤{i}: {step}")
-
-        return {"plan": plan_steps}
-
-    except Exception as e:
-        logger.error(f"生成计划失败: {e}", exc_info=True)
-        # 返回一个默认计划
-        return {"plan": ["收集相关信息", "分析数据", "生成报告"]}
+        if isinstance(plan, dict):
+            plan = DiagnosticPlan.model_validate(plan)
+        if not isinstance(plan, DiagnosticPlan):
+            raise ValueError("Planner 未返回有效的 DiagnosticPlan")
+        registry.validate_plan(plan)
+        logger.info(f"结构化计划已生成，共 {len(plan.steps)} 个步骤")
+        return {"plan": plan}
+    except Exception as exc:
+        logger.error(f"生成结构化计划失败: {exc}", exc_info=True)
+        return {"response": f"诊断计划生成失败：{exc}"}

@@ -3,14 +3,19 @@
 基于 LangGraph 官方教程实现
 """
 
-from .state import PlanExecuteState
-from .planner import planner
 from .executor import executor
+from .models import DiagnosisContext, DiagnosticPlan, DiagnosticStep, StepExecutionResult
+from .planner import planner
 from .replanner import replanner
+from .state import PlanExecuteState
 
 __all__ = [
     "PlanExecuteState",
     "planner",
     "executor",
     "replanner",
+    "DiagnosisContext",
+    "DiagnosticPlan",
+    "DiagnosticStep",
+    "StepExecutionResult",
 ]
