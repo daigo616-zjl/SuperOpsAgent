@@ -262,20 +262,39 @@ async def _generate_response(state: PlanExecuteState, llm: ChatQwen) -> dict[str
 
         response_obj = await response_gen.ainvoke({"messages": messages})
 
-        # 处理返回结果
+        # 处理不同模型适配器的返回结果。部分 Qwen structured output
+        # 适配器在解析失败时会返回 None，而不是抛出异常。
         if isinstance(response_obj, Response):
             final_response = response_obj.response
+        elif isinstance(response_obj, dict):
+            final_response = response_obj.get("response", "")
+        elif response_obj is not None and hasattr(response_obj, "content"):
+            final_response = response_obj.content
         else:
-            # 如果返回的是字典
-            final_response = response_obj.get("response", "")  # type: ignore
+            raise ValueError("结构化响应为空，无法提取 response 字段")
+
+        if not isinstance(final_response, str) or not final_response.strip():
+            raise ValueError("模型返回的最终响应为空")
 
         logger.info(f"最终响应生成完成，长度: {len(final_response)}")
 
         return {"response": final_response}
 
     except Exception as e:
-        logger.error(f"生成响应失败: {e}")
-        # 生成简单的后备响应
+        logger.error(f"结构化响应生成失败: {e}")
+
+        # 结构化输出解析失败时，使用同一模型的普通文本输出作为降级路径，
+        # 避免将可用的 MCP 结果直接替换成“无法生成完整响应”。
+        try:
+            plain_response = await llm.ainvoke(messages)
+            plain_content = getattr(plain_response, "content", plain_response)
+            if isinstance(plain_content, str) and plain_content.strip():
+                logger.info(f"普通文本响应生成完成，长度: {len(plain_content)}")
+                return {"response": plain_content}
+        except Exception as fallback_error:
+            logger.error(f"普通文本响应降级也失败: {fallback_error}")
+
+        # 模型完全不可用时，才生成简单的后备响应
         fallback_response = f"""# 任务执行结果
 
 ## 原始任务
