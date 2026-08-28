@@ -16,6 +16,7 @@ from app.api import chat, health, file, aiops
 from app.core.es_client import es_client_manager
 from app.core.milvus_client import milvus_manager
 from app.services.rerank_service import rerank_service
+from app.services.vector_index_service import vector_index_service
 
 
 @asynccontextmanager
@@ -44,12 +45,14 @@ async def lifespan(app: FastAPI):
 
     logger.info("🔥 正在预热 Rerank 模型...")
     await rerank_service.warmup_async()
+    vector_index_service.start_retry_worker()
 
     logger.info("=" * 60)
 
     yield
 
     # 关闭时执行
+    vector_index_service.stop_retry_worker()
     logger.info("🔌 正在关闭 Elasticsearch 连接...")
     await es_client_manager.close()
     logger.info("🔌 正在关闭 Milvus 连接...")

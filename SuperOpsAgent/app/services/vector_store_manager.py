@@ -118,6 +118,24 @@ class VectorStoreManager:
             logger.error(f"删除文件旧数据失败: {e}")
             raise
 
+    def delete_old_versions(self, file_path: str, keep_version: str) -> int:
+        """删除指定文件的旧版本，保留当前已完成双写的版本。"""
+        try:
+            collection = milvus_manager.get_collection()
+            escaped_path = file_path.replace('\\', '\\\\').replace('"', '\\"')
+            escaped_version = keep_version.replace('"', '\\"')
+            expr = (
+                f'metadata["_source"] == "{escaped_path}" && '
+                f'metadata["_index_version"] != "{escaped_version}"'
+            )
+            result = collection.delete(expr)
+            deleted_count = result.delete_count if hasattr(result, "delete_count") else 0
+            logger.info(f"删除 Milvus 旧版本: {file_path}, 保留版本={keep_version}, 数量={deleted_count}")
+            return deleted_count
+        except Exception as e:
+            logger.error(f"删除 Milvus 旧版本失败: {file_path}, 错误: {e}")
+            raise
+
     def delete_by_ids(self, ids: list[str]) -> int:
         """
         按文档 ID 删除向量数据

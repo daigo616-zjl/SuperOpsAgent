@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     es_search_analyzer: str = "standard"
     es_required: bool = False
 
+    # 文件索引可靠性
+    index_retry_enabled: bool = True
+    index_retry_max_attempts: int = 5
+    index_retry_base_delay_seconds: int = 60
+    index_retry_poll_seconds: int = 15
+
     # 文档分块配置
     chunk_max_size: int = 800
     chunk_overlap: int = 100

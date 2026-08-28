@@ -116,6 +116,8 @@ class SuperOpsAgentApp {
         this.chatContainer = document.querySelector('.chat-container');
         this.welcomeGreeting = document.getElementById('welcomeGreeting');
         this.chatHistoryList = document.getElementById('chatHistoryList');
+        this.indexTaskList = document.getElementById('indexTaskList');
+        this.refreshIndexTasksBtn = document.getElementById('refreshIndexTasksBtn');
         
         // 初始化时检查是否需要居中
         this.checkAndSetCentered();
@@ -203,6 +205,15 @@ class SuperOpsAgentApp {
         
         if (this.fileInput) {
             this.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
+        }
+        if (this.refreshIndexTasksBtn) {
+            this.refreshIndexTasksBtn.addEventListener('click', () => this.loadIndexTasks());
+        }
+        if (this.indexTaskList) {
+            this.indexTaskList.addEventListener('click', (event) => {
+                const button = event.target.closest('[data-retry-task-id]');
+                if (button) this.retryIndexTask(button.dataset.retryTaskId, button);
+            });
         }
     }
 
@@ -1146,8 +1157,9 @@ class SuperOpsAgentApp {
             const data = await response.json();
 
             if ((data.code === 200 || data.message === 'success') && data.data) {
-                // 在聊天界面显示上传成功消息
-                const successMessage = `${file.name} 上传到知识库成功`;
+                const successMessage = data.data.index_status === 'success'
+                    ? `${file.name} 上传到知识库成功`
+                    : `${file.name} 已上传，索引任务进入重试队列`;
                 this.addMessage('assistant', successMessage, false, true);
             } else {
                 throw new Error(data.message || '上传失败');
@@ -1164,6 +1176,54 @@ class SuperOpsAgentApp {
             this.isStreaming = false;
             this.showUploadOverlay(false);
             this.updateUI();
+        }
+    }
+
+    async loadIndexTasks() {
+        if (!this.indexTaskList) return;
+        this.indexTaskList.closest('.index-tasks-section')?.classList.add('is-open');
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/index/tasks`);
+            if (!response.ok) throw new Error(`HTTP错误: ${response.status}`);
+            const payload = await response.json();
+            this.renderIndexTasks(payload.data || []);
+        } catch (error) {
+            console.error('加载索引任务失败:', error);
+        }
+    }
+
+    renderIndexTasks(tasks) {
+        const retryable = tasks.filter(task => ['failed', 'partial_success'].includes(task.status));
+        if (!retryable.length) {
+            this.indexTaskList.innerHTML = '<div class="index-task-empty">暂无失败任务</div>';
+            return;
+        }
+        const labels = { failed: '失败', partial_success: '部分成功' };
+        this.indexTaskList.innerHTML = retryable.slice(-8).reverse().map(task => `
+            <div class="index-task-item">
+                <div class="index-task-info">
+                    <span class="index-task-name" title="${this.escapeHtml(task.file_path || '')}">${this.escapeHtml((task.file_path || '').split(/[\\/]/).pop())}</span>
+                    <span class="index-task-status">${labels[task.status] || task.status} · ${task.retry_count || 0} 次</span>
+                </div>
+                <button class="index-task-retry-btn" data-retry-task-id="${this.escapeHtml(task.task_id)}">重试</button>
+            </div>
+        `).join('');
+    }
+
+    async retryIndexTask(taskId, button) {
+        if (!taskId || button.disabled) return;
+        button.disabled = true;
+        button.textContent = '重试中';
+        try {
+            const response = await fetch(`${this.apiBaseUrl}/index/retry/${encodeURIComponent(taskId)}`, { method: 'POST' });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.detail || '重试失败');
+            this.showNotification('索引重试成功', 'success');
+            this.loadIndexTasks();
+        } catch (error) {
+            button.disabled = false;
+            button.textContent = '重试';
+            this.showNotification(`索引重试失败: ${error.message}`, 'error');
         }
     }
 

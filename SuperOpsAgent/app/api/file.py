@@ -1,5 +1,6 @@
 """文件上传接口模块"""
 
+import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -48,13 +49,8 @@ async def upload_file(file: UploadFile = File(...)):
         # 4. 创建上传目录
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-        # 5. 保存文件
+        # 5. 保存到同目录临时文件，索引成功后再原子替换正式文件
         file_path = UPLOAD_DIR / safe_filename
-
-        # 如果文件已存在，先删除旧文件（实现覆盖更新）
-        if file_path.exists():
-            logger.info(f"文件已存在，将覆盖: {file_path}")
-            file_path.unlink()
 
         # 读取并保存文件内容
         content = await file.read()
@@ -63,22 +59,39 @@ async def upload_file(file: UploadFile = File(...)):
         if len(content) > MAX_FILE_SIZE:
             raise HTTPException(status_code=400, detail=f"文件大小超过限制（最大 {MAX_FILE_SIZE} 字节）")
 
-        file_path.write_bytes(content)
+        temp_file = tempfile.NamedTemporaryFile(
+            mode="wb", prefix=f".{safe_filename}.", suffix=".uploading",
+            dir=UPLOAD_DIR, delete=False,
+        )
+        temp_path = Path(temp_file.name)
+        try:
+            temp_file.write(content)
+            temp_file.flush()
+        finally:
+            temp_file.close()
 
-        logger.info(f"文件上传成功: {file_path}")
+        logger.info(f"文件已保存到临时路径: {temp_path}")
 
-        # 5. 自动创建向量索引
+        # 6. 自动创建向量索引
+        index_status = "failed"
+        index_task_id = None
         try:
             logger.info(f"开始为上传文件创建向量索引: {file_path}")
-            vector_index_service.index_single_file(str(file_path))
+            task = vector_index_service.index_single_file(
+                str(file_path), staged_file_path=str(temp_path)
+            )
             logger.info(f"向量索引创建成功: {file_path}")
+            index_status = task.get("status", "success")
+            index_task_id = task.get("task_id")
         except Exception as e:
             logger.error(f"向量索引创建失败: {file_path}, 错误: {e}")
-            # 注意：即使索引失败，文件上传仍然成功，只是记录错误日志
+            # 临时文件和失败任务都会保留，供持久化重试队列处理。
+            failed_task = vector_index_service.task_store.latest_for_file(file_path.resolve().as_posix())
+            index_task_id = failed_task.get("task_id") if failed_task else None
 
-        # 6. 返回响应
+        # 7. 返回响应
         return JSONResponse(
-            status_code=200,
+            status_code=200 if index_status == "success" else 202,
             content={
                 "code": 200,
                 "message": "success",
@@ -86,6 +99,8 @@ async def upload_file(file: UploadFile = File(...)):
                     "filename": safe_filename,
                     "file_path": str(file_path),
                     "size": len(content),
+                    "index_status": index_status,
+                    "index_task_id": index_task_id,
                 },
             },
         )
@@ -126,6 +141,27 @@ async def index_directory(directory_path: str = None):
     except Exception as e:
         logger.error(f"索引目录失败: {e}")
         raise HTTPException(status_code=500, detail=f"索引目录失败: {e}")
+
+
+@router.post("/index/retry/{task_id}")
+async def retry_index_task(task_id: str):
+    """重试失败或部分成功的文件索引任务。"""
+    try:
+        task = vector_index_service.retry_task(task_id)
+        return JSONResponse(status_code=200, content={"code": 200, "message": "success", "data": task})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"重试索引任务失败: {exc}") from exc
+
+
+@router.get("/index/tasks")
+async def list_index_tasks():
+    """返回索引任务队列，供前端展示失败任务和重试状态。"""
+    return JSONResponse(
+        status_code=200,
+        content={"code": 200, "message": "success", "data": vector_index_service.task_store.list()},
+    )
 
 
 def _get_file_extension(filename: str) -> str:

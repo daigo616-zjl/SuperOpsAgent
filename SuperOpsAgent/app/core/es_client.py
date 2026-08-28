@@ -37,6 +37,8 @@ class EsClientManager:
                     "h2": {"type": "keyword"},
                     "h3": {"type": "keyword"},
                     "metadata": {"type": "object", "enabled": False},
+                    "index_version": {"type": "keyword"},
+                    "index_task_id": {"type": "keyword"},
                     "indexed_at": {"type": "date"},
                 }
             },

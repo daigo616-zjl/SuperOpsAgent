@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SuperOpsAgent</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=20260828-index-tasks">
     <!-- Markdown 渲染库 -->
     <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
     <!-- 代码高亮库（可选） -->
@@ -33,6 +33,16 @@
                     </div>
                     <div class="chat-history-list" id="chatHistoryList">
                         <!-- 历史对话列表将在这里动态生成 -->
+                    </div>
+                </div>
+
+                <div class="index-tasks-section">
+                    <div class="history-header">
+                        <span>索引任务</span>
+                        <button class="task-refresh-btn" id="refreshIndexTasksBtn" title="刷新任务">↻</button>
+                    </div>
+                    <div class="index-task-list" id="indexTaskList">
+                        <div class="index-task-empty">暂无索引任务</div>
                     </div>
                 </div>
                 
@@ -127,6 +137,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260828-index-tasks"></script>
 </body>
 </html>

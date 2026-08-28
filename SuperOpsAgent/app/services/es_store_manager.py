@@ -24,6 +24,8 @@ class EsStoreManager:
             "h2": metadata.get("h2"),
             "h3": metadata.get("h3"),
             "metadata": metadata,
+            "index_version": metadata.get("_index_version"),
+            "index_task_id": metadata.get("_index_task_id"),
             "indexed_at": datetime.now(UTC).isoformat(),
         }
 
@@ -43,7 +45,6 @@ class EsStoreManager:
 
         success, errors = bulk(client, actions, raise_on_error=False)
         if errors:
-            self.delete_by_ids(ids)
             raise RuntimeError(f"ES bulk 部分失败: {errors[:3]}")
 
         logger.info(f"批量写入 Elasticsearch 完成: success={success}")
@@ -58,6 +59,25 @@ class EsStoreManager:
         )
         deleted = int(response.get("deleted", 0))
         logger.info(f"删除 Elasticsearch 文件旧数据: {file_path}, 删除数量: {deleted}")
+        return deleted
+
+    def delete_old_versions(self, file_path: str, keep_version: str) -> int:
+        client = es_client_manager.get_sync_client()
+        response = client.delete_by_query(
+            index=config.es_index,
+            body={
+                "query": {
+                    "bool": {
+                        "filter": [{"term": {"source": file_path}}],
+                        "must_not": [{"term": {"index_version": keep_version}}],
+                    }
+                }
+            },
+            conflicts="proceed",
+            refresh=True,
+        )
+        deleted = int(response.get("deleted", 0))
+        logger.info(f"删除 Elasticsearch 旧版本: {file_path}, 保留版本={keep_version}, 数量={deleted}")
         return deleted
 
     def delete_by_ids(self, ids: list[str]) -> int:
@@ -75,7 +95,7 @@ class EsStoreManager:
         ]
         _, errors = bulk(client, actions, raise_on_error=False)
         if errors:
-            logger.warning(f"按 ID 删除 Elasticsearch 文档时出现部分失败: {errors[:3]}")
+            raise RuntimeError(f"按 ID 删除 Elasticsearch 文档时出现部分失败: {errors[:3]}")
         deleted = len(ids)
         logger.info(f"按 ID 删除 Elasticsearch 文档完成: 删除数量={deleted}")
         return deleted

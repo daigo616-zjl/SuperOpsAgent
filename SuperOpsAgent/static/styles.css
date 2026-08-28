@@ -935,6 +935,87 @@ body {
 }
 
 /* 文件上传相关 */
+.index-tasks-section {
+    margin-top: 24px;
+}
+
+.index-tasks-section .history-header {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+}
+
+.task-refresh-btn {
+    background: transparent;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
+    font-size: 16px;
+}
+
+.index-task-list {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.index-tasks-section.is-open .index-task-list {
+    display: flex;
+}
+
+.index-task-empty {
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 12px;
+    padding: 4px 0;
+}
+
+.index-task-item {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+    padding: 8px;
+}
+
+.index-task-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.index-task-name {
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.index-task-status {
+    color: #ffb74d;
+    font-size: 11px;
+    margin-top: 2px;
+}
+
+.index-task-retry-btn {
+    background: #4f8cff;
+    border: 0;
+    border-radius: 6px;
+    color: white;
+    cursor: pointer;
+    flex: 0 0 auto;
+    font-size: 11px;
+    padding: 5px 8px;
+}
+
+.index-task-retry-btn:disabled {
+    cursor: wait;
+    opacity: 0.6;
+}
+
 .upload-status {
     margin-top: 12px;
     padding: 10px 16px;
