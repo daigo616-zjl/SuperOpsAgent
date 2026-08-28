@@ -3,6 +3,8 @@ Executor 节点：执行单个步骤
 基于 LangGraph 官方教程实现
 """
 
+import json
+import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -44,6 +46,15 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
         mcp_client = await get_mcp_client_with_retry()
         mcp_tools = await mcp_client.get_tools()
         logger.info(f"可用工具数量: 本地 {len(local_tools)} + MCP {len(mcp_tools)}")
+
+        # 监控取数步骤必须使用确定的 MCP 工具，不能交给 LLM 自由选择，
+        # 否则模型可能只查询主题元数据而不读取实际指标/日志。
+        required_result = await _execute_required_monitor_tool(task, mcp_tools)
+        if required_result is not None:
+            return {
+                "plan": plan[1:],
+                "past_steps": [(task, required_result)],
+            }
 
         # 合并所有工具
         all_tools = local_tools + mcp_tools
@@ -114,3 +125,83 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
             "plan": plan[1:],
             "past_steps": [(task, f"执行失败: {str(e)}")],
         }
+
+
+async def _execute_required_monitor_tool(task: str, mcp_tools: list) -> str | None:
+    """根据计划步骤强制调用 MCP 监控工具，并返回原始结果。"""
+    tools = {getattr(tool, "name", ""): tool for tool in mcp_tools}
+
+    async def invoke(name: str, arguments: dict[str, Any]) -> Any:
+        tool = tools.get(name)
+        if tool is None:
+            raise RuntimeError(f"MCP 工具不可用: {name}")
+        logger.info(f"强制调用 MCP 工具: {name}, 参数={arguments}")
+        return await tool.ainvoke(arguments)
+
+    try:
+        if "获取当前时间" in task or "时间基准" in task:
+            result = await invoke("get_current_timestamp", {})
+        elif "system-metrics" in task or "CPU" in task or "内存" in task:
+            result = {
+                "cpu": await invoke("query_cpu_metrics", {"service_name": "data-sync-service"}),
+                "memory": await invoke("query_memory_metrics", {"service_name": "data-sync-service"}),
+            }
+        elif "application-logs" in task or "应用日志" in task or "日志证据" in task or "详细日志" in task:
+            end_time_result = await invoke("get_current_timestamp", {})
+            end_time = _extract_timestamp(end_time_result)
+            if end_time is None:
+                raise RuntimeError(f"无法解析 MCP 时间戳: {end_time_result!r}")
+            topic_result = await invoke("get_topic_info_by_name", {"topic_name": "数据同步服务日志"})
+            topic = _unwrap_tool_result(topic_result)
+            topic_id = topic.get("topic_id") if isinstance(topic, dict) else "topic-001"
+            start_time = end_time - 15 * 60 * 1000
+            result = await invoke(
+                "search_log",
+                {"topic_id": topic_id, "start_time": start_time, "end_time": end_time, "limit": 100},
+            )
+        else:
+            return None
+        return json.dumps(result, ensure_ascii=False, default=str)
+    except Exception as exc:
+        logger.error(f"强制调用监控 MCP 工具失败: {exc}")
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
+def _unwrap_tool_result(value: Any) -> Any:
+    """解包 LangChain MCP 结果中常见的 text/content/list 包装。"""
+    if isinstance(value, list):
+        if len(value) == 1:
+            return _unwrap_tool_result(value[0])
+        return [_unwrap_tool_result(item) for item in value]
+    if isinstance(value, dict):
+        if value.get("type") == "text" and "text" in value:
+            return _unwrap_tool_result(value["text"])
+        if "content" in value and len(value) == 1:
+            return _unwrap_tool_result(value["content"])
+        return value
+    if isinstance(value, str):
+        try:
+            return _unwrap_tool_result(json.loads(value))
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def _extract_timestamp(value: Any) -> int | None:
+    """从 MCP 工具返回值中提取毫秒时间戳。"""
+    value = _unwrap_tool_result(value)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, dict):
+        for key in ("timestamp", "data", "result", "value"):
+            if key in value:
+                timestamp = _extract_timestamp(value[key])
+                if timestamp is not None:
+                    return timestamp
+    if isinstance(value, str):
+        match = re.search(r"\d{12,}", value)
+        if match:
+            return int(match.group(0))
+    return None
