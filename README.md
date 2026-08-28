@@ -5,7 +5,7 @@ SuperOpsAgent 是一个面向 On-Call 场景的智能运维助手。项目使用
 Elasticsearch、DashScope 和 MCP 完成知识检索、告警分析与诊断建议生成。
 
 当前版本以本地开发和功能验证为主：Milvus Lite 直接使用本地数据库文件，
-Elasticsearch 使用本机服务，CLS 与 Monitor MCP 返回模拟数据，不需要 Docker。
+Elasticsearch 使用本机服务，CLS 与 Monitor MCP 返回模拟数据。
 
 ## 主要能力
 
@@ -15,7 +15,7 @@ Elasticsearch 使用本机服务，CLS 与 Monitor MCP 返回模拟数据，不�
 - AIOps 诊断：使用 Plan-Execute-Replan 工作流调用日志和监控 MCP 工具。
 - 流式输出：聊天和 AIOps 诊断均支持 SSE。
 - 离线评测：内置 Ragas 数据集加载、执行和 JSON 报告输出。
-- 本地运行：Milvus Lite 无需独立服务或 Docker。
+- 本地运行：Milvus Lite 无需独立服务。
 
 ## 系统流程
 
