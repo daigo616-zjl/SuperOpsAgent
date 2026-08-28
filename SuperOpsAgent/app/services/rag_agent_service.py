@@ -222,7 +222,10 @@ class RagAgentService:
 
         except Exception as e:
             logger.error(f"[会话 {session_id}] RAG Agent 查询失败（非流式）: {e}")
-            raise
+            return RagQueryWithContextResult(
+                answer="当前模型服务暂时不可用，请稍后重试。",
+                retrieved_contexts=[],
+            )
         finally:
             clear_captured_retrieval_docs(session_id)
 
@@ -288,8 +291,8 @@ class RagAgentService:
 
         except Exception as e:
             logger.error(f"[会话 {session_id}] RAG Agent 查询失败（流式）: {e}")
-            yield {"type": "error", "data": str(e)}
-            raise
+            yield {"type": "content", "data": "当前模型服务暂时不可用，请稍后重试。"}
+            yield {"type": "complete"}
 
     def get_session_history(self, session_id: str) -> list:
         """

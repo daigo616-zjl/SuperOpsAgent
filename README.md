@@ -224,6 +224,14 @@ DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 | `RAG_RERANK_WARMUP_ENABLED` | `true` | 启动 API 或离线评测时是否提前预热重排模型 |
 | `RAG_RERANK_WARMUP_TIMEOUT` | `120` | 重排模型预热超时秒数 |
 | `RAG_QUERY_REWRITE_ENABLED` | `true` | 是否启用查询改写 |
+| `LLM_TIMEOUT` | `30` | 统一 LLM 调用超时秒数 |
+| `LLM_MAX_RETRIES` | `2` | 网络错误、429、5xx 的最大重试次数 |
+| `LLM_MAX_CONCURRENCY` | `8` | LLM 并发限流上限 |
+| `LLM_MIN_INTERVAL` | `0` | LLM 请求最小启动间隔秒数 |
+| `LLM_CIRCUIT_FAILURE_THRESHOLD` | `3` | 连续失败多少次后熔断 |
+| `LLM_CIRCUIT_RECOVERY_TIMEOUT` | `30` | 熔断恢复探测间隔秒数 |
+| `LLM_RETRY_BACKOFF` | `0.25` | 重试指数退避基准秒数 |
+| `LLM_FALLBACK_MODEL` | `qwen-turbo` | 主模型失败后的备用模型 |
 | `MCP_CLS_URL` | `http://localhost:18003/mcp` | CLS MCP 地址 |
 | `MCP_MONITOR_URL` | `http://localhost:18004/mcp` | Monitor MCP 地址 |
 

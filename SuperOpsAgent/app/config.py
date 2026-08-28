@@ -58,6 +58,16 @@ class Settings(BaseSettings):
     rag_query_rewrite_timeout: int = 5
     rag_query_rewrite_max_length: int = 200
 
+    # LLM 稳定性配置
+    llm_timeout: float = 30.0
+    llm_max_retries: int = 2
+    llm_max_concurrency: int = 8
+    llm_min_interval: float = 0.0
+    llm_circuit_failure_threshold: int = 3
+    llm_circuit_recovery_timeout: float = 30.0
+    llm_retry_backoff: float = 0.25
+    llm_fallback_model: str = "qwen-turbo"
+
     # 离线评测配置
     eval_model: str = "qwen-max"
     eval_output_dir: str = "eval/reports"
