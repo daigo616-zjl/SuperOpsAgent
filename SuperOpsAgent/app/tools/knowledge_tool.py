@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 
 from langchain_core.documents import Document
 from langchain_core.runnables import RunnableConfig
@@ -15,23 +16,31 @@ from app.services.hybrid_search_service import hybrid_search_service
 from app.services.query_rewrite_service import query_rewrite_service
 from app.services.rerank_service import rerank_service
 
-_CAPTURED_RETRIEVAL_DOCS: dict[str, list[Document]] = {}
+
+@dataclass(slots=True)
+class RetrievalTrace:
+    candidates: list[Document]
+    ranked_docs: list[Document]
+    final_docs: list[Document]
+
+
+_CAPTURED_RETRIEVAL_TRACES: dict[str, RetrievalTrace] = {}
 _ACTIVE_RETRIEVAL_SESSION: ContextVar[str | None] = ContextVar(
     "active_retrieval_session",
     default=None,
 )
 
 
-def set_captured_retrieval_docs(session_id: str, docs: list[Document]) -> None:
-    _CAPTURED_RETRIEVAL_DOCS[session_id] = docs
+def set_captured_retrieval_trace(session_id: str, trace: RetrievalTrace) -> None:
+    _CAPTURED_RETRIEVAL_TRACES[session_id] = trace
 
 
-def pop_captured_retrieval_docs(session_id: str) -> list[Document]:
-    return _CAPTURED_RETRIEVAL_DOCS.pop(session_id, [])
+def pop_captured_retrieval_trace(session_id: str) -> RetrievalTrace | None:
+    return _CAPTURED_RETRIEVAL_TRACES.pop(session_id, None)
 
 
-def clear_captured_retrieval_docs(session_id: str) -> None:
-    _CAPTURED_RETRIEVAL_DOCS.pop(session_id, None)
+def clear_captured_retrieval_trace(session_id: str) -> None:
+    _CAPTURED_RETRIEVAL_TRACES.pop(session_id, None)
 
 
 @contextmanager
@@ -75,20 +84,33 @@ def retrieve_knowledge(
         )
 
         if not candidates:
+            if session_id:
+                set_captured_retrieval_trace(
+                    session_id,
+                    RetrievalTrace(candidates=[], ranked_docs=[], final_docs=[]),
+                )
             logger.warning("未检索到相关文档")
             return "没有找到相关信息。", []
 
         if config.rag_rerank_enabled:
-            docs = rerank_service.rerank(
+            ranked_docs = rerank_service.rerank(
                 rewritten_query,
                 candidates,
-                top_k=config.rag_top_k,
+                top_k=len(candidates),
             )
         else:
-            docs = candidates[: config.rag_top_k]
+            ranked_docs = candidates
+        docs = ranked_docs[: config.rag_top_k]
 
         if session_id:
-            set_captured_retrieval_docs(session_id, docs)
+            set_captured_retrieval_trace(
+                session_id,
+                RetrievalTrace(
+                    candidates=candidates,
+                    ranked_docs=ranked_docs,
+                    final_docs=docs,
+                ),
+            )
 
         # 格式化文档为上下文
         context = format_docs(docs)
@@ -99,6 +121,11 @@ def retrieve_knowledge(
         return context, docs
 
     except Exception as e:
+        if session_id:
+            set_captured_retrieval_trace(
+                session_id,
+                RetrievalTrace(candidates=[], ranked_docs=[], final_docs=[]),
+            )
         logger.error(f"知识检索工具调用失败: {e}")
         return f"检索知识时发生错误: {str(e)}", []
 

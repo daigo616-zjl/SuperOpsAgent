@@ -14,6 +14,9 @@ class EvalAnswerGenerationError(RuntimeError):
 class EvalAnswerResult:
     answer: str
     retrieved_contexts: list[str]
+    retrieval_attempted: bool
+    retrieval_candidate_sources: list[str]
+    reranked_sources: list[str]
 
 
 async def generate_answer_with_context(
@@ -33,6 +36,9 @@ async def generate_answer_with_context(
     return EvalAnswerResult(
         answer=result.answer,
         retrieved_contexts=result.retrieved_contexts,
+        retrieval_attempted=result.retrieval_attempted,
+        retrieval_candidate_sources=result.retrieval_candidate_sources,
+        reranked_sources=result.reranked_sources,
     )
 
 

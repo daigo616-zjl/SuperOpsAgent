@@ -21,6 +21,11 @@ from ragas.metrics.collections import (
 from app.config import config
 from app.eval.answer_generator import EvalAnswerGenerationError, generate_answer_with_context
 from app.eval.dataset import EvalSample
+from app.eval.retrieval_metrics import (
+    hit_at_k,
+    recall_at_k,
+    relevant_sources_from_metadata,
+)
 
 
 @dataclass(slots=True)
@@ -30,6 +35,10 @@ class EvalDetail:
     ground_truth: str
     answer: str | None = None
     retrieved_contexts: list[str] = field(default_factory=list)
+    relevant_sources: list[str] = field(default_factory=list)
+    retrieval_attempted: bool = False
+    retrieval_candidate_sources: list[str] = field(default_factory=list)
+    reranked_sources: list[str] = field(default_factory=list)
     scores: dict[str, float | None] = field(default_factory=dict)
     error: str | None = None
 
@@ -133,6 +142,43 @@ def _metric_error_message(exc: Exception, timeout: int) -> str:
     return f"{type(exc).__name__}: {detail}"
 
 
+def _retrieval_metric_names() -> tuple[str, str]:
+    if config.eval_recall_k <= 0 or config.eval_hit_k <= 0:
+        raise ValueError("EVAL_RECALL_K and EVAL_HIT_K must be positive")
+    return f"recall_at_{config.eval_recall_k}", f"hit_at_{config.eval_hit_k}"
+
+
+def _score_retrieval(detail: EvalDetail) -> dict[str, float | None]:
+    recall_name, hit_name = _retrieval_metric_names()
+    return {
+        recall_name: recall_at_k(
+            detail.relevant_sources,
+            detail.retrieval_candidate_sources,
+            config.eval_recall_k,
+        ),
+        hit_name: hit_at_k(
+            detail.relevant_sources,
+            detail.reranked_sources,
+            config.eval_hit_k,
+        ),
+    }
+
+
+def _summarize_metrics(
+    details: list[EvalDetail],
+    metric_names: list[str],
+) -> dict[str, float | None]:
+    summary: dict[str, float | None] = {}
+    for name in metric_names:
+        values = [
+            value
+            for detail in details
+            if isinstance((value := detail.scores.get(name)), (int, float))
+        ]
+        summary[name] = mean(values) if values else None
+    return summary
+
+
 async def _score_details(
     details: list[EvalDetail],
 ) -> tuple[dict[str, float | None], list[dict[str, str]]]:
@@ -219,15 +265,7 @@ async def _score_details(
         "answer_correctness",
         "context_relevance",
     ]
-    summary: dict[str, float | None] = {}
-    for name in metric_names:
-        values = [
-            value
-            for detail in details
-            if isinstance((value := detail.scores.get(name)), (int, float))
-        ]
-        summary[name] = mean(values) if values else None
-    return summary, errors
+    return _summarize_metrics(details, metric_names), errors
 
 
 async def run_ragas_evaluation(samples: list[EvalSample]) -> EvalReport:
@@ -239,6 +277,7 @@ async def run_ragas_evaluation(samples: list[EvalSample]) -> EvalReport:
             id=sample.id,
             question=sample.question,
             ground_truth=sample.ground_truth,
+            relevant_sources=relevant_sources_from_metadata(sample.metadata),
         )
         details.append(detail)
 
@@ -249,15 +288,22 @@ async def run_ragas_evaluation(samples: list[EvalSample]) -> EvalReport:
             )
             detail.answer = result.answer
             detail.retrieved_contexts = result.retrieved_contexts
+            detail.retrieval_attempted = result.retrieval_attempted
+            detail.retrieval_candidate_sources = result.retrieval_candidate_sources
+            detail.reranked_sources = result.reranked_sources
         except EvalAnswerGenerationError as exc:
             detail.error = str(exc)
             errors.append({"id": sample.id, "error": str(exc)})
+        finally:
+            detail.scores.update(_score_retrieval(detail))
 
     successful_details = [detail for detail in details if detail.answer and not detail.error]
     if not successful_details:
         raise ValueError("All evaluation samples failed to generate answers")
 
     metric_summary, metric_errors = await _score_details(successful_details)
+    retrieval_metric_names = list(_retrieval_metric_names())
+    metric_summary.update(_summarize_metrics(details, retrieval_metric_names))
     errors.extend(metric_errors)
 
     summary = EvalSummary(

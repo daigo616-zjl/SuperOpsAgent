@@ -237,6 +237,8 @@ API Key 或其他凭据。
 | `EVAL_ANSWER_CORRECTNESS_TIMEOUT` | `240` | Answer Correctness 整项评分超时秒数 |
 | `EVAL_METRIC_MAX_CONCURRENCY` | `2` | 同时运行的 Ragas 指标数 |
 | `EVAL_CLIENT_MAX_RETRIES` | `3` | 评测客户端瞬时失败重试次数 |
+| `EVAL_RECALL_K` | `20` | 在 RRF 融合候选中计算文档级 Recall@K |
+| `EVAL_HIT_K` | `5` | 在 Rerank 排序结果中计算文档级 Hit@K |
 
 `DASHSCOPE_API_BASE` 必须与 Key 的地域一致。默认值是北京地域：
 
@@ -349,6 +351,22 @@ Server 中替换数据生成逻辑，并配置腾讯云 CLS、Prometheus、Grafa
 ## 离线评测
 
 项目提供一个示例 JSONL 数据集：`eval/fixtures/sample_ragas_dataset.jsonl`。
+
+检索指标通过每条样本的 `metadata.source` 标注正确来源文档；一个问题对应多个
+正确文档时使用 `metadata.relevant_sources`：
+
+```json
+{"id":"case-001","question":"...","ground_truth":"...","metadata":{"source":"cpu_high_usage.md"}}
+{"id":"case-002","question":"...","ground_truth":"...","metadata":{"relevant_sources":["cpu_high_usage.md","incident_runbook.md"]}}
+```
+
+报告同时包含以下检索指标：
+
+- `recall_at_20`：RRF 融合后的前 20 个候选覆盖了多少正确来源文档。
+- `hit_at_5`：Rerank 后前 5 个结果是否至少命中一个正确来源文档。
+
+指标按文件名进行大小写无关匹配。未执行检索或没有命中时计为 `0`；没有提供
+`source` / `relevant_sources` 标签的样本记为 `null`，不参与汇总平均值。
 
 离线评测会直接打开 Milvus Lite 数据文件。运行前请停止 FastAPI，避免两个进程同时
 占用 `data/milvus.db`；Elasticsearch、CLS MCP 和 Monitor MCP 应保持运行。评测命令

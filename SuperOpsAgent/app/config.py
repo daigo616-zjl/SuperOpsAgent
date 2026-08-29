@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     eval_answer_correctness_timeout: int = 240
     eval_metric_max_concurrency: int = 2
     eval_client_max_retries: int = 3
+    eval_recall_k: int = 20
+    eval_hit_k: int = 5
 
     # Elasticsearch 配置
     es_scheme: str = "http"

@@ -20,8 +20,8 @@ from app.core.llm_factory import LLMFactory
 from app.tools import get_current_time, retrieve_knowledge
 from app.tools.knowledge_tool import (
     capture_retrieval_for_session,
-    clear_captured_retrieval_docs,
-    pop_captured_retrieval_docs,
+    clear_captured_retrieval_trace,
+    pop_captured_retrieval_trace,
 )
 
 # 阿里千问大模型和 LangChain 集成参考：
@@ -32,6 +32,23 @@ from app.tools.knowledge_tool import (
 class RagQueryWithContextResult:
     answer: str
     retrieved_contexts: list[str]
+    retrieval_attempted: bool
+    retrieval_candidate_sources: list[str]
+    reranked_sources: list[str]
+
+
+def _document_sources(documents: list[Any]) -> list[str]:
+    sources: list[str] = []
+    for document in documents:
+        metadata = document.metadata or {}
+        source = (
+            metadata.get("_file_name")
+            or metadata.get("file_name")
+            or metadata.get("_source")
+            or metadata.get("source")
+        )
+        sources.append(str(source or ""))
+    return sources
 
 
 class RagAgentService:
@@ -179,7 +196,7 @@ class RagAgentService:
         Returns:
             RagQueryWithContextResult: 完整答案与真实检索上下文
         """
-        clear_captured_retrieval_docs(session_id)
+        clear_captured_retrieval_trace(session_id)
         try:
             await self._initialize_agent()
 
@@ -207,17 +224,29 @@ class RagAgentService:
                     logger.info(f"[会话 {session_id}] Agent 调用了工具: {tool_names}")
 
                 logger.info(f"[会话 {session_id}] RAG Agent 查询完成（非流式）")
-                docs = pop_captured_retrieval_docs(session_id)
+                trace = pop_captured_retrieval_trace(session_id)
+                docs = trace.final_docs if trace else []
                 return RagQueryWithContextResult(
                     answer=answer,
                     retrieved_contexts=[doc.page_content for doc in docs],
+                    retrieval_attempted=trace is not None,
+                    retrieval_candidate_sources=(
+                        _document_sources(trace.candidates) if trace else []
+                    ),
+                    reranked_sources=_document_sources(trace.ranked_docs) if trace else [],
                 )
 
             logger.warning(f"[会话 {session_id}] Agent 返回结果为空")
-            docs = pop_captured_retrieval_docs(session_id)
+            trace = pop_captured_retrieval_trace(session_id)
+            docs = trace.final_docs if trace else []
             return RagQueryWithContextResult(
                 answer="",
                 retrieved_contexts=[doc.page_content for doc in docs],
+                retrieval_attempted=trace is not None,
+                retrieval_candidate_sources=(
+                    _document_sources(trace.candidates) if trace else []
+                ),
+                reranked_sources=_document_sources(trace.ranked_docs) if trace else [],
             )
 
         except Exception as e:
@@ -225,9 +254,12 @@ class RagAgentService:
             return RagQueryWithContextResult(
                 answer="当前模型服务暂时不可用，请稍后重试。",
                 retrieved_contexts=[],
+                retrieval_attempted=False,
+                retrieval_candidate_sources=[],
+                reranked_sources=[],
             )
         finally:
-            clear_captured_retrieval_docs(session_id)
+            clear_captured_retrieval_trace(session_id)
 
     async def query_stream(
         self,
