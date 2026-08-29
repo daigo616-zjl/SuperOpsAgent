@@ -154,7 +154,7 @@ async def diagnose_stream(request: AIOpsRequest):
             logger.info(f"[会话 {session_id}] AIOps 诊断流式响应完成")
 
         except Exception as e:
-            logger.error(f"[会话 {session_id}] AIOps 诊断流式响应异常: {e}", exc_info=True)
+            logger.exception("[会话 {}] AIOps 诊断流式响应异常: {}", session_id, e)
             yield {
                 "event": "message",
                 "data": json.dumps(
@@ -163,4 +163,10 @@ async def diagnose_stream(request: AIOpsRequest):
                 ),
             }
 
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(
+        event_generator(),
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

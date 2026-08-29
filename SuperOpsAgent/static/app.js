@@ -19,6 +19,9 @@ class SuperOpsAgentApp {
 
     // 初始化Markdown配置
     initMarkdown() {
+        let attempts = 0;
+        const maxAttempts = 50;
+
         // 等待 marked 库加载完成
         const checkMarked = () => {
             if (typeof marked !== 'undefined') {
@@ -51,8 +54,13 @@ class SuperOpsAgentApp {
                     console.error('Markdown 配置失败:', e);
                 }
             } else {
-                // 如果 marked 还没加载，等待一段时间后重试
-                setTimeout(checkMarked, 100);
+                attempts += 1;
+                if (attempts < maxAttempts) {
+                    // CDN 加载较慢时短暂等待；最终由内置渲染器兜底。
+                    setTimeout(checkMarked, 100);
+                } else {
+                    console.warn('marked 库未加载，将使用内置 Markdown 渲染器');
+                }
             }
         };
         checkMarked();
@@ -64,8 +72,7 @@ class SuperOpsAgentApp {
         
         // 检查 marked 是否可用
         if (typeof marked === 'undefined') {
-            console.warn('marked 库未加载，使用纯文本显示');
-            return this.escapeHtml(content);
+            return this.renderBasicMarkdown(content);
         }
         
         try {
@@ -73,8 +80,148 @@ class SuperOpsAgentApp {
             return html;
         } catch (e) {
             console.error('Markdown 渲染失败:', e);
-            return this.escapeHtml(content);
+            return this.renderBasicMarkdown(content);
         }
+    }
+
+    // CDN 不可用时的内置 Markdown 渲染器。
+    // 覆盖诊断报告使用的标题、分隔线、表格、列表、引用和代码块，
+    // 并先转义原始内容，避免把模型输出当作 HTML 执行。
+    renderBasicMarkdown(content) {
+        const lines = String(content).replace(/\r\n?/g, '\n').split('\n');
+        const output = [];
+
+        const renderInline = (text) => {
+            const codeTokens = [];
+            let html = this.escapeHtml(text).replace(/`([^`\n]+)`/g, (_, code) => {
+                const token = `\u0000CODE${codeTokens.length}\u0000`;
+                codeTokens.push(`<code>${code}</code>`);
+                return token;
+            });
+
+            html = html
+                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+                .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+                .replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
+
+            return html.replace(/\u0000CODE(\d+)\u0000/g, (_, index) => codeTokens[Number(index)]);
+        };
+
+        const parseTableCells = (line) => {
+            let value = line.trim();
+            if (value.startsWith('|')) value = value.slice(1);
+            if (value.endsWith('|')) value = value.slice(0, -1);
+            return value.split('|').map(cell => cell.trim());
+        };
+
+        const isTableSeparator = (line) => {
+            const cells = parseTableCells(line);
+            return cells.length > 0 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
+        };
+
+        const isBlockStart = (index) => {
+            const line = lines[index] || '';
+            const trimmed = line.trim();
+            return !trimmed
+                || /^```/.test(trimmed)
+                || /^#{1,6}\s+/.test(trimmed)
+                || /^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)
+                || /^\s*(?:[-+*]|\d+\.)\s+/.test(line)
+                || /^\s*>\s?/.test(line)
+                || (trimmed.includes('|') && index + 1 < lines.length && isTableSeparator(lines[index + 1]));
+        };
+
+        let index = 0;
+        while (index < lines.length) {
+            const line = lines[index];
+            const trimmed = line.trim();
+
+            if (!trimmed) {
+                index += 1;
+                continue;
+            }
+
+            const fenceMatch = trimmed.match(/^```\s*([\w-]+)?/);
+            if (fenceMatch) {
+                const language = fenceMatch[1] ? ` class="language-${fenceMatch[1]}"` : '';
+                const codeLines = [];
+                index += 1;
+                while (index < lines.length && !/^```\s*$/.test(lines[index].trim())) {
+                    codeLines.push(lines[index]);
+                    index += 1;
+                }
+                if (index < lines.length) index += 1;
+                output.push(`<pre><code${language}>${this.escapeHtml(codeLines.join('\n'))}</code></pre>`);
+                continue;
+            }
+
+            const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+            if (headingMatch) {
+                const level = headingMatch[1].length;
+                output.push(`<h${level}>${renderInline(headingMatch[2])}</h${level}>`);
+                index += 1;
+                continue;
+            }
+
+            if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+                output.push('<hr>');
+                index += 1;
+                continue;
+            }
+
+            if (trimmed.includes('|') && index + 1 < lines.length && isTableSeparator(lines[index + 1])) {
+                const headers = parseTableCells(line);
+                index += 2;
+                const rows = [];
+                while (index < lines.length && lines[index].trim().includes('|')) {
+                    rows.push(parseTableCells(lines[index]));
+                    index += 1;
+                }
+                const headerHtml = headers.map(cell => `<th>${renderInline(cell)}</th>`).join('');
+                const bodyHtml = rows.map(row => {
+                    const normalized = headers.map((_, cellIndex) => row[cellIndex] || '');
+                    return `<tr>${normalized.map(cell => `<td>${renderInline(cell)}</td>`).join('')}</tr>`;
+                }).join('');
+                output.push(`<table><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>`);
+                continue;
+            }
+
+            const listMatch = line.match(/^\s*([-+*]|\d+\.)\s+(.+)$/);
+            if (listMatch) {
+                const ordered = /\d+\./.test(listMatch[1]);
+                const tag = ordered ? 'ol' : 'ul';
+                const items = [];
+                while (index < lines.length) {
+                    const itemMatch = lines[index].match(/^\s*([-+*]|\d+\.)\s+(.+)$/);
+                    if (!itemMatch || /\d+\./.test(itemMatch[1]) !== ordered) break;
+                    items.push(`<li>${renderInline(itemMatch[2])}</li>`);
+                    index += 1;
+                }
+                output.push(`<${tag}>${items.join('')}</${tag}>`);
+                continue;
+            }
+
+            if (/^\s*>\s?/.test(line)) {
+                const quoteLines = [];
+                while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+                    quoteLines.push(lines[index].replace(/^\s*>\s?/, ''));
+                    index += 1;
+                }
+                output.push(`<blockquote>${quoteLines.map(renderInline).join('<br>')}</blockquote>`);
+                continue;
+            }
+
+            const paragraphLines = [line];
+            index += 1;
+            while (index < lines.length && !isBlockStart(index)) {
+                paragraphLines.push(lines[index]);
+                index += 1;
+            }
+            output.push(`<p>${paragraphLines.map(renderInline).join('<br>')}</p>`);
+        }
+
+        return output.join('\n');
     }
 
     // 高亮代码块
@@ -1260,6 +1407,7 @@ class SuperOpsAgentApp {
             const decoder = new TextDecoder();
             let buffer = '';
             let currentEvent = 'message'; // 默认事件类型为 message
+            let reportStarted = false;
 
             try {
                 while (true) {
@@ -1327,6 +1475,12 @@ class SuperOpsAgentApp {
                                                 console.log('AI Ops 最终报告生成');
                                                 const reportText = `\n\n## 🎯 诊断报告\n\n${sseMessage.report || ''}\n`;
                                                 fullResponse += reportText;
+                                            } else if (sseMessage.type === 'report_chunk') {
+                                                if (!reportStarted) {
+                                                    fullResponse += `\n\n## 🎯 诊断报告\n\n`;
+                                                    reportStarted = true;
+                                                }
+                                                fullResponse += sseMessage.data || '';
                                             } else if (sseMessage.type === 'complete') {
                                                 // 处理完成事件
                                                 console.log('AI Ops 诊断完成');
@@ -1397,6 +1551,15 @@ class SuperOpsAgentApp {
                                             if (loadingMessageElement) {
                                                 this.updateAIOpsStreamContent(loadingMessageElement, fullResponse);
                                             }
+                                        } else if (sseMessage.type === 'report_chunk') {
+                                            if (!reportStarted) {
+                                                fullResponse += `\n\n## 🎯 诊断报告\n\n`;
+                                                reportStarted = true;
+                                            }
+                                            fullResponse += sseMessage.data || '';
+                                            if (loadingMessageElement) {
+                                                this.updateAIOpsStreamContent(loadingMessageElement, fullResponse);
+                                            }
                                         } else if (sseMessage.type === 'complete') {
                                             // 处理完成事件
                                             console.log('AI Ops 诊断完成，最终内容长度:', fullResponse.length);
@@ -1454,8 +1617,13 @@ class SuperOpsAgentApp {
                 messageContent.className = 'message-content';
                 messageContentWrapper.appendChild(messageContent);
             }
-            // 流式显示时使用纯文本
-            messageContent.textContent = content;
+            // 首个 SSE 分片到达后立即退出横向的加载布局，
+            // 与最终完成态保持一致的纵向 Markdown 板块排列。
+            messageContent.classList.remove('loading-message-content');
+            // 每次分片到达时都按最终消息的规则重新渲染 Markdown，
+            // 使标题、列表、表格和代码块在流式输出期间就保持格式。
+            messageContent.innerHTML = this.renderMarkdown(content);
+            this.highlightCodeBlocks(messageContent);
             this.scrollToBottom();
         }
     }

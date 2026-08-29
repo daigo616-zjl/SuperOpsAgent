@@ -1064,13 +1064,15 @@ body {
 
 /* 智能运维消息样式 */
 .aiops-message {
-    max-width: 90%;
+    max-width: 100%;
 }
 
 .aiops-message .message-content {
     max-width: 100%;
-    background: rgba(26, 115, 232, 0.05);
-    border: 1px solid rgba(26, 115, 232, 0.2);
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 0;
 }
 
 /* 详情折叠区域 */

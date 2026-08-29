@@ -115,9 +115,18 @@ class AIOpsService:
             # 流式执行工作流
             config_dict = {"configurable": {"thread_id": session_id}}
 
-            async for event in self.graph.astream(
-                input=initial_state, config=config_dict, stream_mode="updates"
+            report_streamed = False
+            async for stream_mode, event in self.graph.astream(
+                input=initial_state,
+                config=config_dict,
+                stream_mode=["updates", "custom"],
             ):
+                if stream_mode == "custom":
+                    if isinstance(event, dict) and event.get("type") == "report_chunk":
+                        report_streamed = True
+                        yield event
+                    continue
+
                 # 解析事件
                 for node_name, node_output in event.items():
                     logger.info(f"节点 '{node_name}' 输出事件")
@@ -130,7 +139,11 @@ class AIOpsService:
                         yield self._format_executor_event(node_output)
 
                     elif node_name == NODE_REPLANNER:
-                        yield self._format_replanner_event(node_output)
+                        replanner_event = self._format_replanner_event(node_output)
+                        # The complete node update contains the same report that has
+                        # already reached the client chunk by chunk.
+                        if not (report_streamed and replanner_event.get("type") == "report"):
+                            yield replanner_event
 
             # 获取最终状态
             final_state = self.graph.get_state(config_dict)
@@ -151,7 +164,9 @@ class AIOpsService:
             logger.info(f"[会话 {session_id}] 任务执行完成")
 
         except Exception as e:
-            logger.error(f"[会话 {session_id}] 任务执行失败: {e}", exc_info=True)
+            # Loguru does not interpret logging's exc_info=True flag. exception()
+            # preserves the traceback needed to diagnose graph/state update failures.
+            logger.exception(f"[会话 {session_id}] 任务执行失败: {e}")
             yield {"type": "error", "stage": "error", "message": f"任务执行出错: {str(e)}"}
 
     async def diagnose(

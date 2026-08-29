@@ -44,6 +44,15 @@ class ToolRegistry:
         args_schema = getattr(handler, "args_schema", None)
         if args_schema is None:
             return arguments
+        # langchain-mcp-adapters intentionally exposes MCP inputSchema as a plain
+        # JSON Schema dict. StructuredTool validates that form during ainvoke;
+        # model_validate is only available on Pydantic model classes.
+        if isinstance(args_schema, dict):
+            return arguments
+        if not hasattr(args_schema, "model_validate"):
+            raise InvalidToolArgumentsError(
+                f"工具 {name} 的参数 Schema 类型不受支持: {type(args_schema).__name__}"
+            )
         try:
             validated = args_schema.model_validate(arguments)
         except ValidationError as exc:

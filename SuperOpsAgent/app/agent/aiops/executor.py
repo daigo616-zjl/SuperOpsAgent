@@ -1,6 +1,7 @@
 """Executor 节点：校验并执行 Planner 指定的单个工具调用。"""
 
 import json
+import re
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any
@@ -110,7 +111,7 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
             error=ExecutionError(type=type(exc).__name__, message=str(exc)),
         )
     except Exception as exc:
-        logger.error(f"工具执行失败: {exc}", exc_info=True)
+        logger.exception("工具执行失败: {}", exc)
         result = _completed_result(
             step,
             "failed",
@@ -154,7 +155,10 @@ def _get_path(value: Any, path: str | None) -> Any:
     if not path:
         return value
     current = value
-    for part in path.split("."):
+    # Accept both JSON-style list indexes (topics[0].topic_id) and the dot
+    # notation used by the planner contract (topics.0.topic_id).
+    normalized_path = re.sub(r"\[(\d+)\]", r".\1", path).strip(".")
+    for part in normalized_path.split("."):
         if isinstance(current, dict) and part in current:
             current = current[part]
         elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
