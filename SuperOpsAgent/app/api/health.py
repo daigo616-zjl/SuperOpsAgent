@@ -1,22 +1,25 @@
 """健康检查接口"""
 
 from typing import Any
+
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
+from loguru import logger
+
 from app.config import config
 from app.core.es_client import es_client_manager
 from app.core.milvus_client import milvus_manager
-from loguru import logger
+from app.core.postgres import postgres_manager
 
 router = APIRouter()
 
 
 @router.get("/health")
 async def health_check():
-    
+
     """健康检查接口
     检查服务状态和数据库连接状态
-    
+
     Returns:
         JSONResponse: 健康检查结果
     """
@@ -26,7 +29,21 @@ async def health_check():
         "version": config.app_version,
         "status": "healthy"
     }
-    
+
+    # PostgreSQL 是权威数据源。
+    try:
+        postgres_healthy = postgres_manager.health_check()
+        health_data["postgresql"] = {
+            "status": "connected" if postgres_healthy else "disconnected",
+            "message": "PostgreSQL 连接正常" if postgres_healthy else "PostgreSQL 连接异常",
+        }
+    except Exception as e:
+        logger.warning(f"PostgreSQL 健康检查失败: {e}")
+        health_data["postgresql"] = {
+            "status": "error",
+            "message": f"PostgreSQL 检查失败: {str(e)}",
+        }
+
     # 检查 Milvus 连接状态
     try:
         milvus_healthy = milvus_manager.health_check()
@@ -42,7 +59,7 @@ async def health_check():
             "status": "error",
             "message": f"Milvus 检查失败: {str(e)}"
         }
-    
+
     # 检查 Elasticsearch 连接状态
     try:
         es_healthy = es_client_manager.health_check()
@@ -65,15 +82,16 @@ async def health_check():
 
     # 如果数据库不可用，服务不可用
     if (
-        health_data["milvus"]["status"] != "connected"
+        health_data["postgresql"]["status"] != "connected"
+        or health_data["milvus"]["status"] != "connected"
         or health_data["elasticsearch"]["status"] != "connected"
     ):
         overall_status = "unhealthy"
         status_code = 503
         health_data["error"] = "数据库不可用"
-    
+
     health_data["status"] = overall_status
-    
+
     return JSONResponse(
         status_code=status_code,
         content={

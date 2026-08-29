@@ -8,6 +8,8 @@ class SuperOpsAgentApp {
         this.currentChatHistory = []; // 当前对话的消息历史
         this.chatHistories = this.loadChatHistories(); // 所有历史对话
         this.isCurrentChatFromHistory = false; // 标记当前对话是否是从历史记录加载的
+        this.knowledgeOriginalMarkdown = null;
+        this.knowledgeOriginalEditorHtml = '';
         
         this.initializeElements();
         this.bindEvents();
@@ -15,6 +17,8 @@ class SuperOpsAgentApp {
         this.initMarkdown();
         this.checkAndSetCentered();
         this.renderChatHistory();
+        this.restoreSidebarSections();
+        this.loadIndexTasks();
     }
 
     // 初始化Markdown配置
@@ -249,9 +253,8 @@ class SuperOpsAgentApp {
         // 输入区域元素
         this.messageInput = document.getElementById('messageInput');
         this.sendButton = document.getElementById('sendButton');
-        this.toolsBtn = document.getElementById('toolsBtn');
-        this.toolsMenu = document.getElementById('toolsMenu');
         this.uploadFileItem = document.getElementById('uploadFileItem');
+        this.manageDocumentsItem = document.getElementById('manageDocumentsItem');
         this.modeSelectorBtn = document.getElementById('modeSelectorBtn');
         this.modeDropdown = document.getElementById('modeDropdown');
         this.currentModeText = document.getElementById('currentModeText');
@@ -263,8 +266,29 @@ class SuperOpsAgentApp {
         this.chatContainer = document.querySelector('.chat-container');
         this.welcomeGreeting = document.getElementById('welcomeGreeting');
         this.chatHistoryList = document.getElementById('chatHistoryList');
+        this.chatHistorySection = document.getElementById('chatHistorySection');
+        this.chatHistoryToggle = document.getElementById('chatHistoryToggle');
+        this.chatHistoryCount = document.getElementById('chatHistoryCount');
         this.indexTaskList = document.getElementById('indexTaskList');
+        this.indexTasksSection = document.getElementById('indexTasksSection');
+        this.indexTasksToggle = document.getElementById('indexTasksToggle');
+        this.indexTaskBadge = document.getElementById('indexTaskBadge');
         this.refreshIndexTasksBtn = document.getElementById('refreshIndexTasksBtn');
+        this.knowledgeModal = document.getElementById('knowledgeModal');
+        this.knowledgeCloseBtn = document.getElementById('knowledgeCloseBtn');
+        this.knowledgeNewBtn = document.getElementById('knowledgeNewBtn');
+        this.knowledgeDocumentList = document.getElementById('knowledgeDocumentList');
+        this.knowledgeEmpty = document.getElementById('knowledgeEmpty');
+        this.knowledgeForm = document.getElementById('knowledgeForm');
+        this.knowledgeDocumentId = document.getElementById('knowledgeDocumentId');
+        this.knowledgeDocumentVersion = document.getElementById('knowledgeDocumentVersion');
+        this.knowledgeTitle = document.getElementById('knowledgeTitle');
+        this.knowledgeSourcePath = document.getElementById('knowledgeSourcePath');
+        this.knowledgeContent = document.getElementById('knowledgeContent');
+        this.knowledgeEditorToolbar = document.getElementById('knowledgeEditorToolbar');
+        this.knowledgeIndexStatus = document.getElementById('knowledgeIndexStatus');
+        this.knowledgeReindexBtn = document.getElementById('knowledgeReindexBtn');
+        this.knowledgeDeleteBtn = document.getElementById('knowledgeDeleteBtn');
         
         // 初始化时检查是否需要居中
         this.checkAndSetCentered();
@@ -276,6 +300,14 @@ class SuperOpsAgentApp {
         if (this.newChatBtn) {
             this.newChatBtn.addEventListener('click', () => this.newChat());
         }
+
+        this.chatHistoryToggle?.addEventListener('click', () => {
+            this.toggleSidebarSection(this.chatHistorySection, this.chatHistoryToggle, 'recent');
+        });
+        this.indexTasksToggle?.addEventListener('click', () => {
+            const expanded = this.toggleSidebarSection(this.indexTasksSection, this.indexTasksToggle, 'indexTasks');
+            if (expanded) this.loadIndexTasks();
+        });
         
         // AI Ops按钮
         if (this.aiOpsSidebarBtn) {
@@ -323,31 +355,48 @@ class SuperOpsAgentApp {
             });
         }
         
-        // 工具按钮和菜单
-        if (this.toolsBtn) {
-            this.toolsBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.toggleToolsMenu();
-            });
-        }
-        
-        // 工具菜单项点击事件
+        // 侧栏文档入口
         if (this.uploadFileItem) {
             this.uploadFileItem.addEventListener('click', () => {
                 if (this.fileInput) {
                     this.fileInput.click();
                 }
-                this.closeToolsMenu();
             });
         }
-        
-        // 点击外部关闭工具菜单
-        document.addEventListener('click', (e) => {
-            if (this.toolsBtn && this.toolsMenu && 
-                !this.toolsBtn.contains(e.target) && 
-                !this.toolsMenu.contains(e.target)) {
-                this.closeToolsMenu();
-            }
+        if (this.manageDocumentsItem) {
+            this.manageDocumentsItem.addEventListener('click', () => {
+                this.openKnowledgeManager();
+            });
+        }
+        this.knowledgeCloseBtn?.addEventListener('click', () => this.closeKnowledgeManager());
+        this.knowledgeModal?.addEventListener('click', event => {
+            if (event.target === this.knowledgeModal) this.closeKnowledgeManager();
+        });
+        this.knowledgeNewBtn?.addEventListener('click', () => this.newKnowledgeDocument());
+        this.knowledgeForm?.addEventListener('submit', event => this.saveKnowledgeDocument(event));
+        this.knowledgeDeleteBtn?.addEventListener('click', () => this.deleteKnowledgeDocument());
+        this.knowledgeReindexBtn?.addEventListener('click', () => this.reindexKnowledgeDocument());
+        this.knowledgeDocumentList?.addEventListener('click', event => {
+            const item = event.target.closest('[data-document-id]');
+            if (item) this.loadKnowledgeDocument(item.dataset.documentId);
+        });
+        this.knowledgeEditorToolbar?.addEventListener('mousedown', event => {
+            if (event.target.closest('[data-editor-command]')) event.preventDefault();
+        });
+        this.knowledgeEditorToolbar?.addEventListener('click', event => {
+            const button = event.target.closest('[data-editor-command]');
+            if (!button) return;
+            this.knowledgeContent.focus();
+            document.execCommand(
+                button.dataset.editorCommand,
+                false,
+                button.dataset.editorValue || null
+            );
+        });
+        this.knowledgeContent?.addEventListener('paste', event => {
+            event.preventDefault();
+            const plainText = event.clipboardData?.getData('text/plain') || '';
+            document.execCommand('insertText', false, plainText);
         });
         
         if (this.fileInput) {
@@ -361,26 +410,6 @@ class SuperOpsAgentApp {
                 const button = event.target.closest('[data-retry-task-id]');
                 if (button) this.retryIndexTask(button.dataset.retryTaskId, button);
             });
-        }
-    }
-
-    // 切换工具菜单显示/隐藏
-    toggleToolsMenu() {
-        if (this.toolsMenu && this.toolsBtn) {
-            const wrapper = this.toolsBtn.closest('.tools-btn-wrapper');
-            if (wrapper) {
-                wrapper.classList.toggle('active');
-            }
-        }
-    }
-
-    // 关闭工具菜单
-    closeToolsMenu() {
-        if (this.toolsMenu && this.toolsBtn) {
-            const wrapper = this.toolsBtn.closest('.tools-btn-wrapper');
-            if (wrapper) {
-                wrapper.classList.remove('active');
-            }
         }
     }
 
@@ -539,8 +568,13 @@ class SuperOpsAgentApp {
         }
         
         this.chatHistoryList.innerHTML = '';
-        
+        if (this.chatHistoryCount) {
+            this.chatHistoryCount.textContent = String(this.chatHistories.length);
+            this.chatHistoryCount.hidden = this.chatHistories.length === 0;
+        }
+
         if (this.chatHistories.length === 0) {
+            this.chatHistoryList.innerHTML = '<div class="history-empty">暂无最近对话</div>';
             return;
         }
         
@@ -775,7 +809,7 @@ class SuperOpsAgentApp {
         // 更新输入框状态
         if (this.messageInput) {
             this.messageInput.disabled = this.isStreaming;
-            this.messageInput.placeholder = '问问智能OnCall助手';
+            this.messageInput.placeholder = '输入问题，或描述你遇到的情况';
         }
     }
 
@@ -1245,6 +1279,275 @@ class SuperOpsAgentApp {
         }, 3000);
     }
 
+    async apiRequest(path, options = {}) {
+        const response = await fetch(`${this.apiBaseUrl}${path}`, options);
+        let payload = {};
+        try {
+            payload = await response.json();
+        } catch (_) {
+            // 非 JSON 错误由统一消息处理。
+        }
+        if (!response.ok) throw new Error(payload.detail || payload.message || `HTTP错误: ${response.status}`);
+        return payload.data;
+    }
+
+    async openKnowledgeManager() {
+        if (!this.knowledgeModal) return;
+        this.knowledgeModal.classList.add('is-open');
+        this.knowledgeModal.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('modal-open');
+        await this.loadKnowledgeDocuments();
+    }
+
+    closeKnowledgeManager() {
+        this.knowledgeModal?.classList.remove('is-open');
+        this.knowledgeModal?.setAttribute('aria-hidden', 'true');
+        document.body.classList.remove('modal-open');
+    }
+
+    async loadKnowledgeDocuments() {
+        if (!this.knowledgeDocumentList) return;
+        this.knowledgeDocumentList.innerHTML = '<div class="knowledge-list-message">加载中...</div>';
+        try {
+            const data = await this.apiRequest('/knowledge/documents?limit=200');
+            const items = data.items || [];
+            if (!items.length) {
+                this.knowledgeDocumentList.innerHTML = '<div class="knowledge-list-message">暂无文档</div>';
+                return;
+            }
+            this.knowledgeDocumentList.innerHTML = items.map(document => `
+                <button class="knowledge-list-item" data-document-id="${this.escapeHtml(document.public_id)}">
+                    <strong>${this.escapeHtml(document.title)}</strong>
+                    <span>${this.escapeHtml(document.source_path)}</span>
+                    <small>${this.escapeHtml(document.index_status || '等待索引')} · v${document.version}</small>
+                </button>
+            `).join('');
+        } catch (error) {
+            this.knowledgeDocumentList.innerHTML = `<div class="knowledge-list-message error">${this.escapeHtml(error.message)}</div>`;
+        }
+    }
+
+    restoreSidebarSections() {
+        let saved = {};
+        try {
+            saved = JSON.parse(localStorage.getItem('sidebarSections') || '{}');
+        } catch (error) {
+            console.warn('恢复侧栏状态失败:', error);
+        }
+        this.setSidebarSection(this.chatHistorySection, this.chatHistoryToggle, Boolean(saved.recent));
+        this.setSidebarSection(this.indexTasksSection, this.indexTasksToggle, Boolean(saved.indexTasks));
+    }
+
+    setSidebarSection(section, toggle, expanded) {
+        if (!section || !toggle) return false;
+        section.classList.toggle('is-open', expanded);
+        toggle.setAttribute('aria-expanded', String(expanded));
+        return expanded;
+    }
+
+    toggleSidebarSection(section, toggle, storageKey) {
+        const expanded = !section?.classList.contains('is-open');
+        this.setSidebarSection(section, toggle, expanded);
+        try {
+            const saved = JSON.parse(localStorage.getItem('sidebarSections') || '{}');
+            saved[storageKey] = expanded;
+            localStorage.setItem('sidebarSections', JSON.stringify(saved));
+        } catch (error) {
+            console.warn('保存侧栏状态失败:', error);
+        }
+        return expanded;
+    }
+
+    richTextToMarkdown(container) {
+        const inline = node => {
+            if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || '';
+            if (node.nodeType !== Node.ELEMENT_NODE) return '';
+            const tag = node.tagName.toLowerCase();
+            const content = Array.from(node.childNodes).map(inline).join('');
+            if (tag === 'br') return '\n';
+            if (tag === 'strong' || tag === 'b') return content ? `**${content}**` : '';
+            if (tag === 'em' || tag === 'i') return content ? `*${content}*` : '';
+            if (tag === 'code' && node.parentElement?.tagName.toLowerCase() !== 'pre') {
+                return content ? `\`${content}\`` : '';
+            }
+            if (tag === 'a') {
+                const href = node.getAttribute('href') || '';
+                return href ? `[${content}](${href})` : content;
+            }
+            return content;
+        };
+
+        const listItem = node => {
+            const pieces = [];
+            node.childNodes.forEach(child => {
+                if (child.nodeType === Node.ELEMENT_NODE && ['ul', 'ol'].includes(child.tagName.toLowerCase())) {
+                    const nested = block(child).trimEnd().split('\n').map(line => `  ${line}`).join('\n');
+                    pieces.push(`\n${nested}`);
+                } else if (child.nodeType === Node.ELEMENT_NODE && ['p', 'div'].includes(child.tagName.toLowerCase())) {
+                    pieces.push(Array.from(child.childNodes).map(inline).join(''));
+                } else {
+                    pieces.push(inline(child));
+                }
+            });
+            return pieces.join('').trim();
+        };
+
+        const table = node => {
+            const rows = Array.from(node.querySelectorAll('tr')).map(row =>
+                Array.from(row.querySelectorAll(':scope > th, :scope > td')).map(cell =>
+                    Array.from(cell.childNodes).map(inline).join('').replace(/\|/g, '\\|').trim()
+                )
+            ).filter(row => row.length);
+            if (!rows.length) return '';
+            const width = Math.max(...rows.map(row => row.length));
+            const normalized = rows.map(row => Array.from({ length: width }, (_, index) => row[index] || ''));
+            const header = `| ${normalized[0].join(' | ')} |`;
+            const separator = `| ${Array(width).fill('---').join(' | ')} |`;
+            return `${header}\n${separator}\n${normalized.slice(1).map(row => `| ${row.join(' | ')} |`).join('\n')}\n\n`;
+        };
+
+        const block = node => {
+            if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || '';
+            if (node.nodeType !== Node.ELEMENT_NODE) return '';
+            const tag = node.tagName.toLowerCase();
+            if (/^h[1-6]$/.test(tag)) {
+                return `${'#'.repeat(Number(tag[1]))} ${Array.from(node.childNodes).map(inline).join('').trim()}\n\n`;
+            }
+            if (tag === 'p' || tag === 'div') {
+                return `${Array.from(node.childNodes).map(inline).join('').trim()}\n\n`;
+            }
+            if (tag === 'ul' || tag === 'ol') {
+                return `${Array.from(node.children).map((item, index) =>
+                    `${tag === 'ol' ? `${index + 1}.` : '-'} ${listItem(item)}`
+                ).join('\n')}\n\n`;
+            }
+            if (tag === 'blockquote') {
+                const content = Array.from(node.childNodes).map(inline).join('').trim();
+                return `${content.split('\n').map(line => `> ${line}`).join('\n')}\n\n`;
+            }
+            if (tag === 'pre') {
+                const codeNode = node.querySelector('code');
+                const languageClass = Array.from(codeNode?.classList || [])
+                    .find(className => className.startsWith('language-'));
+                const language = languageClass ? languageClass.slice('language-'.length) : '';
+                return `\`\`\`${language}\n${node.textContent.replace(/\n+$/, '')}\n\`\`\`\n\n`;
+            }
+            if (tag === 'table') return table(node);
+            if (tag === 'hr') return '---\n\n';
+            return Array.from(node.childNodes).map(block).join('');
+        };
+
+        return Array.from(container.childNodes)
+            .map(block)
+            .join('')
+            .replace(/[ \t]+\n/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+    }
+
+    newKnowledgeDocument() {
+        this.knowledgeEmpty.hidden = true;
+        this.knowledgeForm.hidden = false;
+        this.knowledgeForm.reset();
+        this.knowledgeContent.innerHTML = '<p><br></p>';
+        this.knowledgeOriginalMarkdown = null;
+        this.knowledgeOriginalEditorHtml = this.knowledgeContent.innerHTML;
+        this.knowledgeDocumentId.value = '';
+        this.knowledgeDocumentVersion.value = '';
+        this.knowledgeIndexStatus.textContent = '新文档';
+        this.knowledgeDeleteBtn.hidden = true;
+        this.knowledgeReindexBtn.hidden = true;
+        this.knowledgeTitle.focus();
+    }
+
+    async loadKnowledgeDocument(documentId) {
+        try {
+            const document = await this.apiRequest(`/knowledge/documents/${encodeURIComponent(documentId)}`);
+            this.knowledgeEmpty.hidden = true;
+            this.knowledgeForm.hidden = false;
+            this.knowledgeDocumentId.value = document.public_id;
+            this.knowledgeDocumentVersion.value = document.version;
+            this.knowledgeTitle.value = document.title;
+            this.knowledgeSourcePath.value = document.source_path;
+            this.knowledgeContent.innerHTML = this.renderBasicMarkdown(document.content);
+            this.knowledgeOriginalMarkdown = document.content;
+            this.knowledgeOriginalEditorHtml = this.knowledgeContent.innerHTML;
+            this.knowledgeIndexStatus.textContent = `文档版本 v${document.version}`;
+            this.knowledgeDeleteBtn.hidden = false;
+            this.knowledgeReindexBtn.hidden = false;
+        } catch (error) {
+            this.showNotification(`加载文档失败: ${error.message}`, 'error');
+        }
+    }
+
+    async saveKnowledgeDocument(event) {
+        event.preventDefault();
+        const documentId = this.knowledgeDocumentId.value;
+        if (!this.knowledgeContent.textContent.trim()) {
+            this.showNotification('文档内容不能为空', 'warning');
+            return;
+        }
+        const content = (
+            this.knowledgeOriginalMarkdown !== null
+            && this.knowledgeContent.innerHTML === this.knowledgeOriginalEditorHtml
+        ) ? this.knowledgeOriginalMarkdown : this.richTextToMarkdown(this.knowledgeContent);
+        const body = {
+            title: this.knowledgeTitle.value,
+            source_path: this.knowledgeSourcePath.value,
+            content
+        };
+        if (documentId) body.expected_version = Number(this.knowledgeDocumentVersion.value);
+        try {
+            const document = await this.apiRequest(
+                documentId ? `/knowledge/documents/${encodeURIComponent(documentId)}` : '/knowledge/documents',
+                {
+                    method: documentId ? 'PUT' : 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                }
+            );
+            this.showNotification(
+                document.index_status === 'unchanged' ? '内容未变化，已跳过索引' : '文档已保存，索引任务已入队',
+                'success'
+            );
+            await this.loadKnowledgeDocuments();
+            await this.loadKnowledgeDocument(document.public_id);
+        } catch (error) {
+            this.showNotification(`保存失败: ${error.message}`, 'error');
+        }
+    }
+
+    async deleteKnowledgeDocument() {
+        const documentId = this.knowledgeDocumentId.value;
+        if (!documentId || !window.confirm('确定删除这份文档？双索引将异步清理。')) return;
+        try {
+            await this.apiRequest(
+                `/knowledge/documents/${encodeURIComponent(documentId)}?expected_version=${this.knowledgeDocumentVersion.value}`,
+                { method: 'DELETE' }
+            );
+            this.showNotification('文档已删除，索引清理任务已入队', 'success');
+            this.knowledgeForm.hidden = true;
+            this.knowledgeEmpty.hidden = false;
+            await this.loadKnowledgeDocuments();
+        } catch (error) {
+            this.showNotification(`删除失败: ${error.message}`, 'error');
+        }
+    }
+
+    async reindexKnowledgeDocument() {
+        const documentId = this.knowledgeDocumentId.value;
+        if (!documentId) return;
+        try {
+            await this.apiRequest(
+                `/knowledge/documents/${encodeURIComponent(documentId)}/reindex`,
+                { method: 'POST' }
+            );
+            this.showNotification('索引修复任务已入队', 'success');
+        } catch (error) {
+            this.showNotification(`重建失败: ${error.message}`, 'error');
+        }
+    }
+
     // 处理文件选择
     handleFileSelect(event) {
         const file = event.target.files[0];
@@ -1275,9 +1578,9 @@ class SuperOpsAgentApp {
         }
 
         // 验证文件大小（限制为50MB）
-        const maxSize = 50 * 1024 * 1024;
+        const maxSize = 10 * 1024 * 1024;
         if (file.size > maxSize) {
-            this.showNotification('文件大小不能超过50MB', 'error');
+            this.showNotification('文件大小不能超过10MB', 'error');
             return;
         }
 
@@ -1304,9 +1607,11 @@ class SuperOpsAgentApp {
             const data = await response.json();
 
             if ((data.code === 200 || data.message === 'success') && data.data) {
-                const successMessage = data.data.index_status === 'success'
-                    ? `${file.name} 上传到知识库成功`
-                    : `${file.name} 已上传，索引任务进入重试队列`;
+                const successMessage = data.data.index_status === 'queued'
+                    ? `${file.name} 已保存，索引任务已入队`
+                    : data.data.index_status === 'unchanged'
+                        ? `${file.name} 内容未变化，已跳过索引`
+                        : `${file.name} 已上传，索引任务进入重试队列`;
                 this.addMessage('assistant', successMessage, false, true);
             } else {
                 throw new Error(data.message || '上传失败');
@@ -1328,7 +1633,6 @@ class SuperOpsAgentApp {
 
     async loadIndexTasks() {
         if (!this.indexTaskList) return;
-        this.indexTaskList.closest('.index-tasks-section')?.classList.add('is-open');
         try {
             const response = await fetch(`${this.apiBaseUrl}/index/tasks`);
             if (!response.ok) throw new Error(`HTTP错误: ${response.status}`);
@@ -1340,16 +1644,20 @@ class SuperOpsAgentApp {
     }
 
     renderIndexTasks(tasks) {
-        const retryable = tasks.filter(task => ['failed', 'partial_success'].includes(task.status));
+        const retryable = tasks.filter(task => ['retry', 'dead'].includes(task.status));
+        if (this.indexTaskBadge) {
+            this.indexTaskBadge.textContent = String(retryable.length);
+            this.indexTaskBadge.hidden = retryable.length === 0;
+        }
         if (!retryable.length) {
-            this.indexTaskList.innerHTML = '<div class="index-task-empty">暂无失败任务</div>';
+            this.indexTaskList.innerHTML = '<div class="index-task-empty">索引正常，无待处理异常</div>';
             return;
         }
-        const labels = { failed: '失败', partial_success: '部分成功' };
+        const labels = { retry: '等待重试', dead: '重试耗尽' };
         this.indexTaskList.innerHTML = retryable.slice(-8).reverse().map(task => `
             <div class="index-task-item">
                 <div class="index-task-info">
-                    <span class="index-task-name" title="${this.escapeHtml(task.file_path || '')}">${this.escapeHtml((task.file_path || '').split(/[\\/]/).pop())}</span>
+                    <span class="index-task-name" title="${this.escapeHtml(task.source_path || '')}">${this.escapeHtml(task.title || task.source_path || '')}</span>
                     <span class="index-task-status">${labels[task.status] || task.status} · ${task.retry_count || 0} 次</span>
                 </div>
                 <button class="index-task-retry-btn" data-retry-task-id="${this.escapeHtml(task.task_id)}">重试</button>

@@ -146,23 +146,14 @@ echo [信息] 等待服务启动（15秒）...
 timeout /t 15 /nobreak >nul
 echo.
 
-REM 检查服务状态并上传文档
+REM 检查服务状态。文档由 PostgreSQL 管理，启动时不扫描本地目录。
 echo.
 echo [信息] 检查服务状态...
 curl -fsS http://localhost:%API_PORT%/api/health >nul 2>&1
 if errorlevel 1 (
     echo [警告] 服务可能还未完全启动，请稍等片刻
 ) else (
-    echo [成功] FastAPI 服务运行正常
-    echo.
-    
-    REM 调用 API 上传 aiops-docs 文档到向量数据库
-    echo [信息] 上传文档到向量数据库...
-    for %%f in (aiops-docs\*.md) do (
-        echo   上传: %%~nxf
-        curl -s -X POST http://localhost:%API_PORT%/api/upload -F "file=@%%f" >nul 2>&1
-    )
-    echo [成功] 文档上传完成
+    echo [成功] FastAPI 服务运行正常，文档请通过网页或 API 管理
 )
 
 echo.

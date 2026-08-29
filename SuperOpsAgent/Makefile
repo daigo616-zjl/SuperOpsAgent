@@ -92,17 +92,14 @@ init:
 	@echo "$(GREEN)🚀 开始一键初始化 SuperBizAgent...$(NC)"
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
 	@echo ""
-	@echo "$(YELLOW)步骤 1/3: 启动应用服务（Milvus Lite 随应用启动）$(NC)"
+	@echo "$(YELLOW)步骤 1/2: 启动应用服务（Milvus Lite 随应用启动）$(NC)"
 	@$(MAKE) start
 	@echo ""
-	@echo "$(YELLOW)步骤 2/3: 等待服务就绪$(NC)"
+	@echo "$(YELLOW)步骤 2/2: 等待服务就绪$(NC)"
 	@$(MAKE) wait
 	@echo ""
-	@echo "$(YELLOW)步骤 3/3: 上传文档到向量数据库$(NC)"
-	@$(MAKE) upload
-	@echo ""
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
-	@echo "$(GREEN)✅ 初始化完成！所有文档已成功向量化存储到数据库$(NC)"
+	@echo "$(GREEN)✅ 初始化完成！文档请通过网页或 API 管理$(NC)"
 	@echo "$(GREEN)═══════════════════════════════════════════════════════$(NC)"
 	@echo ""
 	@echo "$(GREEN)🌐 服务访问地址:$(NC)"
@@ -362,44 +359,15 @@ run:
 # 文档管理
 # ============================================================
 
-# 上传所有文档
+# 一次性迁移旧目录（不会在服务启动时自动执行）
 upload:
-	@echo "$(YELLOW)📤 开始上传 $(DOCS_DIR) 目录下的文档...$(NC)"
+	@echo "$(YELLOW)📤 将 $(DOCS_DIR) 一次性导入 PostgreSQL...$(NC)"
 	@if [ ! -d "$(DOCS_DIR)" ]; then \
 		echo "$(RED)❌ 目录 $(DOCS_DIR) 不存在！$(NC)"; \
 		exit 1; \
 	fi
-	@count=0; \
-	success=0; \
-	failed=0; \
-	for file in $(DOCS_DIR)/*.md; do \
-		if [ -f "$$file" ]; then \
-			count=$$((count + 1)); \
-			filename=$$(basename "$$file"); \
-			echo "$(YELLOW)  [$$count] 上传文件: $$filename$(NC)"; \
-			response=$$(curl -s -w "\n%{http_code}" -X POST $(UPLOAD_API) \
-				-F "file=@$$file" \
-				-H "Accept: application/json"); \
-			http_code=$$(echo "$$response" | tail -n1); \
-			body=$$(echo "$$response" | sed '$$d'); \
-			if [ "$$http_code" = "200" ]; then \
-				echo "$(GREEN)      ✅ 成功: $$filename$(NC)"; \
-				success=$$((success + 1)); \
-			else \
-				echo "$(RED)      ❌ 失败: $$filename (HTTP $$http_code)$(NC)"; \
-				echo "$$body" | head -n 3; \
-				failed=$$((failed + 1)); \
-			fi; \
-			sleep 1; \
-		fi; \
-	done; \
-	echo ""; \
-	echo "$(GREEN)📊 上传统计:$(NC)"; \
-	echo "   总计: $$count 个文件"; \
-	echo "   $(GREEN)成功: $$success$(NC)"; \
-	if [ $$failed -gt 0 ]; then \
-		echo "   $(RED)失败: $$failed$(NC)"; \
-	fi
+	@.venv/bin/python scripts/import_markdown_to_postgres.py --directory "$(DOCS_DIR)"
+	@echo "$(GREEN)✅ 旧文档导入完成$(NC)"
 
 # 列出文档
 list-docs:

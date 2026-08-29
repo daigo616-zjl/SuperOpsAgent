@@ -185,6 +185,55 @@ class VectorStoreManager:
             logger.error(f"相似度搜索失败: {e}")
             return []
 
+    @staticmethod
+    def _escape(value: str) -> str:
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    def count_committed_version(
+        self, document_id: str, content_hash: str, index_version: str
+    ) -> int:
+        collection = milvus_manager.get_collection()
+        expr = (
+            f'metadata["document_id"] == "{self._escape(document_id)}" && '
+            f'metadata["content_hash"] == "{self._escape(content_hash)}" && '
+            f'metadata["_index_version"] == "{self._escape(index_version)}"'
+        )
+        rows = collection.query(expr=expr, output_fields=["id"], limit=16384)
+        return len(rows)
+
+    def delete_by_document_id(self, document_id: str) -> int:
+        collection = milvus_manager.get_collection()
+        expr = f'metadata["document_id"] == "{self._escape(document_id)}"'
+        result = collection.delete(expr)
+        return result.delete_count if hasattr(result, "delete_count") else 0
+
+    def delete_old_document_versions(self, document_id: str, keep_version: str) -> int:
+        collection = milvus_manager.get_collection()
+        expr = (
+            f'metadata["document_id"] == "{self._escape(document_id)}" && '
+            f'metadata["_index_version"] != "{self._escape(keep_version)}"'
+        )
+        result = collection.delete(expr)
+        return result.delete_count if hasattr(result, "delete_count") else 0
+
+    def get_scope_chunks(self, source_scope: str) -> list[dict]:
+        collection = milvus_manager.get_collection()
+        expr = f'metadata["source_scope"] == "{self._escape(source_scope)}"'
+        rows = collection.query(expr=expr, output_fields=["id", "metadata"], limit=16384)
+        return [row.get("metadata", {}) for row in rows]
+
+    def delete_legacy_by_source(self, file_path: str) -> int:
+        """查询后按 ID 删除旧式数据，避免依赖 JSON 字段不存在表达式。"""
+        collection = milvus_manager.get_collection()
+        escaped = self._escape(file_path)
+        rows = collection.query(
+            expr=f'metadata["_source"] == "{escaped}"',
+            output_fields=["id", "metadata"],
+            limit=16384,
+        )
+        legacy_ids = [row["id"] for row in rows if not row.get("metadata", {}).get("document_id")]
+        return self.delete_by_ids(legacy_ids)
+
 
 # 全局单例
 vector_store_manager = VectorStoreManager()

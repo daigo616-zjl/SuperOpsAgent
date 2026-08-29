@@ -16,8 +16,9 @@ from app.api import aiops, chat, file, health
 from app.config import config
 from app.core.es_client import es_client_manager
 from app.core.milvus_client import milvus_manager
+from app.core.postgres import postgres_manager
+from app.services.postgres_index_worker import postgres_index_worker
 from app.services.rerank_service import rerank_service
-from app.services.vector_index_service import vector_index_service
 
 
 @asynccontextmanager
@@ -30,7 +31,11 @@ async def lifespan(app: FastAPI):
     logger.info(f"🌐 监听地址: http://{config.host}:{config.port}")
     logger.info(f"📚 API 文档: http://{config.host}:{config.port}/docs")
 
-    # 连接 Milvus
+    # PostgreSQL 是文档、注册表和 Outbox 的唯一权威来源，连接失败时拒绝启动。
+    logger.info("🔌 正在连接 PostgreSQL...")
+    postgres_manager.connect()
+
+    # Milvus 和 Elasticsearch 是可重建的派生索引。
     logger.info("🔌 正在连接 Milvus...")
     milvus_manager.connect()
     logger.info("✅ Milvus 连接成功")
@@ -46,18 +51,20 @@ async def lifespan(app: FastAPI):
 
     logger.info("🔥 正在预热 Rerank 模型...")
     await rerank_service.warmup_async()
-    vector_index_service.start_retry_worker()
+    postgres_index_worker.start()
 
     logger.info("=" * 60)
 
     yield
 
     # 关闭时执行
-    vector_index_service.stop_retry_worker()
+    postgres_index_worker.stop()
     logger.info("🔌 正在关闭 Elasticsearch 连接...")
     await es_client_manager.close()
     logger.info("🔌 正在关闭 Milvus 连接...")
     milvus_manager.close()
+    logger.info("🔌 正在关闭 PostgreSQL 连接池...")
+    postgres_manager.close()
     logger.info(f"👋 {config.app_name} 关闭")
 
 

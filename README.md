@@ -11,7 +11,7 @@ Elasticsearch 使用本机服务，CLS 与 Monitor MCP 返回模拟数据。
 
 - RAG 问答：向量召回与 Elasticsearch BM25 双路检索。
 - 混合排序：支持 RRF 融合、Cross-Encoder 重排序和查询改写。
-- 文档知识库：上传 Markdown 文档后自动分块并建立向量及全文索引。
+- 文档知识库：PostgreSQL 保存权威原文，Outbox 异步建立向量及全文索引。
 - AIOps 诊断：Planner 生成结构化计划，Executor 确定性调用日志和监控工具，
   Replanner 根据结构化结果继续、调整或结束诊断。
 - 流式输出：聊天和 AIOps 诊断均支持 SSE。
@@ -44,6 +44,7 @@ flowchart LR
 
 - Python 3.11、3.12 或 3.13。
 - Elasticsearch 9.x；本项目已使用 9.2.4 验证。
+- PostgreSQL 14+，用于权威文档、索引注册表和任务 Outbox。
 - DashScope API Key，用于对话、查询改写、向量嵌入和评测。
 - Windows 推荐安装 `uv`；未安装时启动脚本会回退到 `pip`。
 
@@ -54,6 +55,7 @@ flowchart LR
 | Web/API | `http://localhost:18000` | FastAPI 与静态页面 |
 | API 文档 | `http://localhost:18000/docs` | Swagger UI |
 | Elasticsearch | `http://localhost:9200` | 本地 Elasticsearch 9.x |
+| PostgreSQL | `localhost:5432` | 权威文档、注册表与 Outbox |
 | CLS MCP | `http://localhost:18003/mcp` | 模拟日志查询 |
 | Monitor MCP | `http://localhost:18004/mcp` | 模拟监控查询 |
 
@@ -74,6 +76,7 @@ notepad .env
 
 ```dotenv
 DASHSCOPE_API_KEY=你的DashScopeKey
+DATABASE_URL=postgresql+psycopg://superops:superops@localhost:5432/superops
 ```
 
 先启动本地 Elasticsearch，并确认以下地址可访问：
@@ -95,7 +98,7 @@ curl.exe http://localhost:9200
 3. 检查 Elasticsearch。
 4. 准备 `data/` 下的 Milvus Lite 数据库。
 5. 启动 CLS MCP、Monitor MCP 和 FastAPI。
-6. 健康检查成功后，自动上传 `aiops-docs\*.md`。
+6. 启动 PostgreSQL Outbox 索引 Worker；不会扫描任何本地文档目录。
 
 停止项目：
 
@@ -133,26 +136,23 @@ make init
 make start
 ```
 
-仅手动启动 Uvicorn 不会自动扫描 `aiops-docs`。需要通过 `/api/upload` 上传文档，
-或自行遍历目录调用该接口。
+启动 Uvicorn 后，文档通过网页“文档管理”或 `/api/knowledge/documents` API 管理。
 
 ## AIOps 知识文档
 
-`aiops-docs/` 保存启动时导入的 Markdown 运维知识。当前包含 CPU、内存、磁盘、
-服务不可用和响应缓慢等示例，以及只有 3 条内容的测试文件：
+PostgreSQL 是文档原文的唯一权威来源。新增、修改、删除会在同一数据库事务中更新
+文档并写入 Outbox，后台 Worker 使用 `FOR UPDATE SKIP LOCKED` 多实例安全地领取任务，
+再异步写入 Milvus 与 Elasticsearch。索引注册表同样保存在 PostgreSQL；周期巡检发现
+任一索引缺失版本或分片后，会自动产生 repair 任务。
 
-```text
-aiops-docs/
-├── cpu_high_usage.md
-├── disk_high_usage.md
-├── memory_high_usage.md
-├── service_unavailable.md
-├── slow_response.md
-└── test_knowledge.md
+网页的“文档管理”入口支持查看、新增、编辑、删除和手动重建。`/api/upload` 作为兼容
+入口会把 UTF-8 文件内容直接写入 PostgreSQL，不会在 `uploads/` 中保存副本。
+
+旧 `aiops-docs` 仅在升级时显式迁移一次，服务启动绝不会调用该脚本：
+
+```powershell
+python scripts/import_markdown_to_postgres.py --directory aiops-docs
 ```
-
-修改或新增文档后，重新运行 `start-windows.bat` 会再次上传全部 Markdown 文件。
-当前运行中的 API 不会实时监控该目录。
 
 手动上传单个文件：
 
@@ -261,6 +261,10 @@ DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 | `ES_INDEX` | `biz` | 全文索引名称 |
 | `ES_ANALYZER` | `standard` | 建索引分词器 |
 | `ES_SEARCH_ANALYZER` | `standard` | 查询分词器 |
+| `DATABASE_URL` | `postgresql+psycopg://superops:superops@localhost:5432/superops` | PostgreSQL 连接串 |
+| `INDEX_WORKER_LEASE_SECONDS` | `300` | Worker 任务租约秒数 |
+| `INDEX_WORKER_MAX_ATTEMPTS` | `8` | 索引任务最大尝试次数 |
+| `INDEX_REPAIR_INTERVAL_SECONDS` | `300` | 双索引一致性巡检间隔 |
 
 只有本地 Elasticsearch 已安装 IK 插件时，才应将分词器改成
 `ik_max_word` 和 `ik_smart`。
@@ -292,13 +296,15 @@ DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| `GET` | `/api/health` | 检查 Milvus Lite 和 Elasticsearch |
+| `GET` | `/api/health` | 检查 PostgreSQL、Milvus Lite 和 Elasticsearch |
 | `POST` | `/api/chat` | 普通 RAG 对话 |
 | `POST` | `/api/chat_stream` | SSE 流式 RAG 对话 |
 | `POST` | `/api/chat/clear` | 清空指定会话 |
 | `GET` | `/api/chat/session/{session_id}` | 获取会话信息 |
-| `POST` | `/api/upload` | 上传并索引文档 |
-| `POST` | `/api/index_directory` | 索引指定目录 |
+| `POST` | `/api/upload` | 兼容上传并写入 PostgreSQL |
+| `GET/POST` | `/api/knowledge/documents` | 查询或新增文档 |
+| `GET/PUT/DELETE` | `/api/knowledge/documents/{id}` | 查看、修改或删除文档 |
+| `POST` | `/api/knowledge/documents/{id}/reindex` | 手动触发索引修复 |
 | `POST` | `/api/aiops` | SSE 流式 AIOps 诊断 |
 
 普通对话示例。请求字段支持代码定义的别名 `Id` 和 `Question`：
@@ -403,7 +409,8 @@ MCP 客户端或项目内的 AIOps 流程调用。
 这是 GBK 控制台输出 Emoji 时的编码问题，通常不影响 API 运行。可以先执行
 `chcp 65001`，或设置 `PYTHONUTF8=1` 后再启动。
 
-### 文档没有自动上传
+### 文档修改后索引没有立即变化
 
-自动上传只由 `start-windows.bat` 执行，并且必须等待 `/api/health` 成功。手动启动
-Uvicorn 后，需要自行调用 `/api/upload`。
+文档保存成功只表示 PostgreSQL 原文和 Outbox 已原子提交，Milvus 与 Elasticsearch
+由后台异步更新。可通过 `/api/index/tasks` 查看 `retry` 或 `dead` 任务并手动重试；
+索引损坏也会被周期巡检发现并自动加入 repair 队列。

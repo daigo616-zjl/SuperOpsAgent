@@ -88,11 +88,16 @@ class Settings(BaseSettings):
     es_search_analyzer: str = "standard"
     es_required: bool = False
 
-    # 文件索引可靠性
-    index_retry_enabled: bool = True
-    index_retry_max_attempts: int = 5
-    index_retry_base_delay_seconds: int = 60
-    index_retry_poll_seconds: int = 15
+    # PostgreSQL 权威知识库
+    database_url: str = "postgresql+psycopg://superops:superops@localhost:5432/superops"
+    database_pool_size: int = 5
+    database_max_overflow: int = 5
+    database_pool_timeout: int = 10
+    index_worker_poll_seconds: float = 1.0
+    index_worker_lease_seconds: int = 300
+    index_worker_max_attempts: int = 8
+    index_repair_interval_seconds: int = 300
+    index_repair_batch_size: int = 100
 
     # 文档分块配置
     chunk_max_size: int = 800

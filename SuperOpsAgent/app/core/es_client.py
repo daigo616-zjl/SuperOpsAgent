@@ -39,6 +39,10 @@ class EsClientManager:
                     "metadata": {"type": "object", "enabled": False},
                     "index_version": {"type": "keyword"},
                     "index_task_id": {"type": "keyword"},
+                    "document_id": {"type": "keyword"},
+                    "source_scope": {"type": "keyword"},
+                    "source_path": {"type": "keyword"},
+                    "content_hash": {"type": "keyword"},
                     "indexed_at": {"type": "date"},
                 }
             },
@@ -69,6 +73,10 @@ class EsClientManager:
             )
             logger.info(f"创建 Elasticsearch index 成功: {config.es_index}")
         else:
+            self._sync_client.indices.put_mapping(
+                index=config.es_index,
+                properties=self._index_body()["mappings"]["properties"],
+            )
             logger.info(f"Elasticsearch index 已存在: {config.es_index}")
 
     def get_sync_client(self) -> Elasticsearch:
