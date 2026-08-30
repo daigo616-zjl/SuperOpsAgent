@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     milvus_lite_path: str = "./data/milvus.db"
     milvus_lite_db_name: str = "default"
     milvus_timeout: int = 10000  # 毫秒
+    # Milvus Lite is an embedded gRPC server. Avoid frequent idle pings being
+    # rejected by the server with GOAWAY too_many_pings.
+    milvus_grpc_keepalive_time_ms: int = 60000
+    milvus_grpc_keepalive_timeout_ms: int = 20000
+    milvus_grpc_keepalive_permit_without_calls: bool = False
 
     # RAG 配置
     rag_top_k: int = 5
@@ -72,9 +77,9 @@ class Settings(BaseSettings):
     eval_model: str = "qwen-max"
     eval_output_dir: str = "eval/reports"
     eval_metric_timeout: int = 90
-    eval_faithfulness_timeout: int = 300
+    eval_faithfulness_timeout: int = 360
     eval_faithfulness_statement_batch_size: int = 10
-    eval_answer_correctness_timeout: int = 240
+    eval_answer_correctness_timeout: int = 300
     eval_metric_max_concurrency: int = 2
     eval_client_max_retries: int = 3
     eval_recall_k: int = 20

@@ -5,9 +5,11 @@ from ragas.metrics.collections import Faithfulness
 
 from app.eval.ragas_runner import (
     BatchedFaithfulness,
+    EvalReport,
     _build_metrics,
     _metric_error_message,
     _metric_timeout,
+    score_existing_report,
 )
 
 
@@ -34,17 +36,17 @@ def test_complex_metrics_use_dedicated_timeouts(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "app.eval.ragas_runner.config.eval_faithfulness_timeout",
-        300,
+        360,
     )
     monkeypatch.setattr(
         "app.eval.ragas_runner.config.eval_answer_correctness_timeout",
-        240,
+        300,
     )
 
     assert _metric_timeout("answer_relevancy") == 90
     assert _metric_timeout("context_relevance") == 90
-    assert _metric_timeout("faithfulness") == 300
-    assert _metric_timeout("answer_correctness") == 240
+    assert _metric_timeout("faithfulness") == 360
+    assert _metric_timeout("answer_correctness") == 300
 
 
 def test_timeout_error_message_is_actionable() -> None:
@@ -80,3 +82,54 @@ def test_faithfulness_verdicts_are_batched_and_merged(monkeypatch) -> None:
 
     assert batch_sizes == [10, 10, 3]
     assert result.statements == statements
+
+
+def test_existing_report_can_be_rescored_without_regenerating_answers(monkeypatch) -> None:
+    report = EvalReport.from_dict(
+        {
+            "summary": {
+                "total": 1,
+                "success": 1,
+                "failed": 0,
+                "metrics": {"answer_relevancy": 0.9},
+            },
+            "details": [
+                {
+                    "id": "case-001",
+                    "question": "question",
+                    "ground_truth": "truth",
+                    "answer": "answer",
+                    "retrieved_contexts": ["context"],
+                    "scores": {
+                        "faithfulness": 0.1,
+                        "answer_correctness": 0.2,
+                    },
+                }
+            ],
+            "errors": [
+                {"id": "case-001", "metric": "faithfulness", "error": "old"}
+            ],
+        }
+    )
+    captured: list[tuple[str, ...]] = []
+
+    async def fake_score_details(details, metric_names):
+        assert len(details) == 1
+        captured.append(tuple(metric_names))
+        details[0].scores.update({"faithfulness": 0.8, "answer_correctness": 0.7})
+        return {"faithfulness": 0.8, "answer_correctness": 0.7}, []
+
+    monkeypatch.setattr("app.eval.ragas_runner._score_details", fake_score_details)
+
+    result = asyncio.run(
+        score_existing_report(report, ("faithfulness", "answer_correctness"))
+    )
+
+    assert captured == [("faithfulness", "answer_correctness")]
+    assert result.summary.metrics == {
+        "answer_relevancy": 0.9,
+        "faithfulness": 0.8,
+        "answer_correctness": 0.7,
+    }
+    assert result.details[0].scores["faithfulness"] == 0.8
+    assert result.details[0].scores["answer_correctness"] == 0.7

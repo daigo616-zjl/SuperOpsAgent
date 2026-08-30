@@ -74,6 +74,17 @@ class MilvusClientManager:
             self._uri = path.resolve().as_posix()
         return self._uri
 
+    @property
+    def grpc_options(self) -> dict[str, int | bool]:
+        """Return conservative keepalive settings for the embedded server."""
+        return {
+            "grpc.keepalive_time_ms": config.milvus_grpc_keepalive_time_ms,
+            "grpc.keepalive_timeout_ms": config.milvus_grpc_keepalive_timeout_ms,
+            "grpc.keepalive_permit_without_calls": (
+                config.milvus_grpc_keepalive_permit_without_calls
+            ),
+        }
+
     def connect(self) -> MilvusClient:
         """
         连接到 Milvus 服务器并初始化 collection
@@ -101,6 +112,7 @@ class MilvusClientManager:
                 uri=self.uri,
                 db_name=config.milvus_lite_db_name,
                 timeout=config.milvus_timeout / 1000,  # 转换为秒
+                grpc_options=self.grpc_options,
             )
 
             # 创建客户端
@@ -108,6 +120,7 @@ class MilvusClientManager:
                 uri=self.uri,
                 db_name=config.milvus_lite_db_name,
                 timeout=config.milvus_timeout / 1000,
+                grpc_options=self.grpc_options,
             )
 
             logger.info("成功打开 Milvus Lite")

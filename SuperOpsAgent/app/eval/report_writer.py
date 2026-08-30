@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import config
+from app.eval.ragas_runner import EvalReport
 
 
 def build_report_path(dataset_path: str) -> Path:
@@ -21,3 +22,9 @@ def write_report(report: dict[str, Any], output_path: Path) -> Path:
         encoding="utf-8",
     )
     return output_path
+
+
+def load_report(input_path: str | Path) -> EvalReport:
+    """Load a prior report for metric-only rescoring."""
+    path = Path(input_path)
+    return EvalReport.from_dict(json.loads(path.read_text(encoding="utf-8")))

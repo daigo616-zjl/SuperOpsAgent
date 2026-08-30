@@ -91,7 +91,13 @@ class PostgresIndexWorker:
         content_hash = str(job["current_content_hash"])
         index_version = str(uuid.uuid4())
         source = f"postgresql://knowledge/{document_id}"
-        documents = document_splitter_service.split_document(str(job["content"]), source)
+        # Use the original path to select the proper splitter.  The internal
+        # PostgreSQL URI has no file suffix, so passing it here would make a
+        # Markdown knowledge document fall back to the generic text splitter.
+        splitter_path = str(job["source_path"] or job["title"])
+        documents = document_splitter_service.split_document(
+            str(job["content"]), splitter_path
+        )
         chunk_ids = [str(uuid.uuid4()) for _ in documents]
         for document in documents:
             document.metadata.update({

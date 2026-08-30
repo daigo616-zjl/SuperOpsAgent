@@ -3,7 +3,7 @@ import asyncio
 import app.eval.ragas_runner as runner_module
 from app.eval.answer_generator import EvalAnswerResult
 from app.eval.dataset import EvalSample
-from app.eval.ragas_runner import EvalDetail, _score_retrieval
+from app.eval.ragas_runner import EvalDetail, _score_retrieval, normalize_metric_names
 from app.eval.retrieval_metrics import (
     hit_at_k,
     recall_at_k,
@@ -33,6 +33,20 @@ def test_recall_and_hit_use_ranked_source_labels() -> None:
 def test_retrieval_metrics_are_none_without_relevance_labels() -> None:
     assert recall_at_k([], ["cpu.md"], 20) is None
     assert hit_at_k([], ["cpu.md"], 5) is None
+
+
+def test_metric_selection_is_normalized_and_validated() -> None:
+    assert normalize_metric_names([" Faithfulness ", "faithfulness", "answer_correctness"]) == (
+        "faithfulness",
+        "answer_correctness",
+    )
+
+    try:
+        normalize_metric_names(["unknown"])
+    except ValueError as exc:
+        assert "Unsupported metrics" in str(exc)
+    else:
+        raise AssertionError("unsupported metric should fail")
 
 
 def test_eval_detail_scores_recall_candidates_and_reranked_hit(monkeypatch) -> None:

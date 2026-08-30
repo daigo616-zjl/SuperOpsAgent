@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from statistics import mean
 from typing import Any
@@ -63,6 +63,60 @@ class EvalReport:
             "details": [asdict(detail) for detail in self.details],
             "errors": self.errors,
         }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "EvalReport":
+        """Restore a report so already-generated answers can be rescored."""
+        summary_payload = payload.get("summary") or {}
+        details = [
+            EvalDetail(
+                id=str(item["id"]),
+                question=str(item["question"]),
+                ground_truth=str(item["ground_truth"]),
+                answer=item.get("answer"),
+                retrieved_contexts=list(item.get("retrieved_contexts") or []),
+                relevant_sources=list(item.get("relevant_sources") or []),
+                retrieval_attempted=bool(item.get("retrieval_attempted", False)),
+                retrieval_candidate_sources=list(item.get("retrieval_candidate_sources") or []),
+                reranked_sources=list(item.get("reranked_sources") or []),
+                scores=dict(item.get("scores") or {}),
+                error=item.get("error"),
+            )
+            for item in payload.get("details", [])
+        ]
+        return cls(
+            summary=EvalSummary(
+                total=int(summary_payload.get("total", len(details))),
+                success=int(summary_payload.get("success", 0)),
+                failed=int(summary_payload.get("failed", 0)),
+                metrics=dict(summary_payload.get("metrics") or {}),
+            ),
+            details=details,
+            errors=list(payload.get("errors") or []),
+        )
+
+
+SUPPORTED_METRICS = (
+    "faithfulness",
+    "answer_relevancy",
+    "answer_correctness",
+    "context_relevance",
+)
+
+
+def normalize_metric_names(metric_names: Sequence[str] | None) -> tuple[str, ...]:
+    """Validate and normalize the metric selection for one evaluation run."""
+    if metric_names is None:
+        return SUPPORTED_METRICS
+
+    normalized = tuple(dict.fromkeys(name.strip().lower() for name in metric_names if name.strip()))
+    unsupported = sorted(set(normalized) - set(SUPPORTED_METRICS))
+    if unsupported:
+        supported = ", ".join(SUPPORTED_METRICS)
+        raise ValueError(f"Unsupported metrics: {', '.join(unsupported)}. Supported: {supported}")
+    if not normalized:
+        raise ValueError("At least one evaluation metric must be selected")
+    return normalized
 
 
 class BatchedFaithfulness(Faithfulness):
@@ -181,9 +235,15 @@ def _summarize_metrics(
 
 async def _score_details(
     details: list[EvalDetail],
+    metric_names: Sequence[str] | None = None,
 ) -> tuple[dict[str, float | None], list[dict[str, str]]]:
+    selected_metrics = normalize_metric_names(metric_names)
     client, metrics = _build_metrics()
-    faithfulness, answer_relevancy, answer_correctness, context_relevance = metrics
+    metric_by_name = {metric.name: metric for metric in metrics}
+    faithfulness = metric_by_name["faithfulness"]
+    answer_relevancy = metric_by_name["answer_relevancy"]
+    answer_correctness = metric_by_name["answer_correctness"]
+    context_relevance = metric_by_name["context_relevance"]
     errors: list[dict[str, str]] = []
     metric_semaphore = asyncio.Semaphore(max(1, config.eval_metric_max_concurrency))
 
@@ -209,43 +269,52 @@ async def _score_details(
             if not detail.answer or detail.error:
                 continue
 
-            operations = [
-                (
-                    "answer_relevancy",
-                    lambda detail=detail: answer_relevancy.ascore(
-                        user_input=detail.question,
-                        response=detail.answer or "",
-                    ),
-                ),
-                (
-                    "answer_correctness",
-                    lambda detail=detail: answer_correctness.ascore(
-                        user_input=detail.question,
-                        response=detail.answer or "",
-                        reference=detail.ground_truth,
-                    ),
-                ),
-            ]
-            if detail.retrieved_contexts:
-                operations.extend(
-                    [
-                        (
-                            "faithfulness",
-                            lambda detail=detail: faithfulness.ascore(
-                                user_input=detail.question,
-                                response=detail.answer or "",
-                                retrieved_contexts=detail.retrieved_contexts,
-                            ),
+            operations: list[tuple[str, Callable[[], Awaitable[Any]]]] = []
+            if "answer_relevancy" in selected_metrics:
+                operations.append(
+                    (
+                        "answer_relevancy",
+                        lambda detail=detail: answer_relevancy.ascore(
+                            user_input=detail.question,
+                            response=detail.answer or "",
                         ),
-                        (
-                            "context_relevance",
-                            lambda detail=detail: context_relevance.ascore(
-                                user_input=detail.question,
-                                retrieved_contexts=detail.retrieved_contexts,
-                            ),
-                        ),
-                    ]
+                    )
                 )
+            if "answer_correctness" in selected_metrics:
+                operations.append(
+                    (
+                        "answer_correctness",
+                        lambda detail=detail: answer_correctness.ascore(
+                            user_input=detail.question,
+                            response=detail.answer or "",
+                            reference=detail.ground_truth,
+                        ),
+                    )
+                )
+            if detail.retrieved_contexts and "faithfulness" in selected_metrics:
+                operations.append(
+                    (
+                        "faithfulness",
+                        lambda detail=detail: faithfulness.ascore(
+                            user_input=detail.question,
+                            response=detail.answer or "",
+                            retrieved_contexts=detail.retrieved_contexts,
+                        ),
+                    )
+                )
+            if detail.retrieved_contexts and "context_relevance" in selected_metrics:
+                operations.append(
+                    (
+                        "context_relevance",
+                        lambda detail=detail: context_relevance.ascore(
+                            user_input=detail.question,
+                            retrieved_contexts=detail.retrieved_contexts,
+                        ),
+                    )
+                )
+
+            if not operations:
+                continue
 
             values = await asyncio.gather(
                 *[
@@ -259,16 +328,33 @@ async def _score_details(
     finally:
         await client.close()
 
-    metric_names = [
-        "faithfulness",
-        "answer_relevancy",
-        "answer_correctness",
-        "context_relevance",
+    return _summarize_metrics(details, list(selected_metrics)), errors
+
+
+async def score_existing_report(
+    report: EvalReport,
+    metric_names: Sequence[str],
+) -> EvalReport:
+    """Score selected metrics using answers and contexts already in a report."""
+    selected_metrics = normalize_metric_names(metric_names)
+    for detail in report.details:
+        for name in selected_metrics:
+            detail.scores.pop(name, None)
+    report.errors = [
+        error for error in report.errors if error.get("metric") not in selected_metrics
     ]
-    return _summarize_metrics(details, metric_names), errors
+
+    scoreable_details = [detail for detail in report.details if detail.answer and not detail.error]
+    metric_summary, metric_errors = await _score_details(scoreable_details, selected_metrics)
+    report.summary.metrics.update(metric_summary)
+    report.errors.extend(metric_errors)
+    return report
 
 
-async def run_ragas_evaluation(samples: list[EvalSample]) -> EvalReport:
+async def run_ragas_evaluation(
+    samples: list[EvalSample],
+    metric_names: Sequence[str] | None = None,
+) -> EvalReport:
     details: list[EvalDetail] = []
     errors: list[dict[str, str]] = []
 
@@ -301,7 +387,14 @@ async def run_ragas_evaluation(samples: list[EvalSample]) -> EvalReport:
     if not successful_details:
         raise ValueError("All evaluation samples failed to generate answers")
 
-    metric_summary, metric_errors = await _score_details(successful_details)
+    selected_metrics = normalize_metric_names(metric_names)
+    if metric_names is None:
+        metric_summary, metric_errors = await _score_details(successful_details)
+    else:
+        metric_summary, metric_errors = await _score_details(
+            successful_details,
+            selected_metrics,
+        )
     retrieval_metric_names = list(_retrieval_metric_names())
     metric_summary.update(_summarize_metrics(details, retrieval_metric_names))
     errors.extend(metric_errors)

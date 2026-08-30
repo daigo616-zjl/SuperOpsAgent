@@ -10,6 +10,9 @@ def test_milvus_lite_settings_defaults() -> None:
 
     assert settings.milvus_lite_path == "./data/milvus.db"
     assert settings.milvus_lite_db_name == "default"
+    assert settings.milvus_grpc_keepalive_time_ms == 60000
+    assert settings.milvus_grpc_keepalive_timeout_ms == 20000
+    assert settings.milvus_grpc_keepalive_permit_without_calls is False
     assert settings.es_analyzer == "standard"
     assert settings.es_search_analyzer == "standard"
 
@@ -29,6 +32,11 @@ def test_milvus_lite_creates_collection(tmp_path: Path, monkeypatch) -> None:
         assert "biz" in client.list_collections()
         assert manager.health_check() is True
         assert manager.get_collection().indexes[0].params["index_type"] == "FLAT"
+        assert manager.grpc_options == {
+            "grpc.keepalive_time_ms": 60000,
+            "grpc.keepalive_timeout_ms": 20000,
+            "grpc.keepalive_permit_without_calls": False,
+        }
     finally:
         manager.close()
 
