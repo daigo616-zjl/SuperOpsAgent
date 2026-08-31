@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from app.agent.mcp_client import get_mcp_client_with_retry
+from app.config import config
 from app.tools import get_current_time, retrieve_knowledge
 
 from .models import DiagnosticPlan
@@ -120,3 +121,33 @@ async def get_tool_registry() -> ToolRegistry:
             )
             handlers[name] = tool
     return ToolRegistry(descriptors=descriptors, handlers=handlers)
+
+
+def get_domain_tool_names(domain: str) -> list[str]:
+    names = config.aiops_domain_tools.get(domain)
+    if names is None:
+        raise ValueError(f"未知取证域: {domain}，可用域: {sorted(config.aiops_domain_tools)}")
+    return list(names)
+
+
+async def get_domain_registry(domain: str) -> ToolRegistry:
+    """按取证域切分工具注册表：能力边界 = 决策权边界。
+
+    取证 Agent 只能看到本域工具名单内的工具；名单中配置了但注册表里
+    不存在的工具视为部署错误，立即失败。
+    """
+    allowed = set(get_domain_tool_names(domain))
+    full = await get_tool_registry()
+    missing = allowed - set(full.descriptors)
+    if missing:
+        raise UnknownToolError(f"取证域 {domain} 缺少已配置工具: {sorted(missing)}")
+    return ToolRegistry(
+        descriptors={
+            name: descriptor
+            for name, descriptor in full.descriptors.items()
+            if name in allowed
+        },
+        handlers={
+            name: handler for name, handler in full.handlers.items() if name in allowed
+        },
+    )

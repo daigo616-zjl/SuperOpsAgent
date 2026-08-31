@@ -119,6 +119,19 @@ class Settings(BaseSettings):
     # AIOps 诊断默认上下文
     aiops_default_service_name: str = "data-sync-service"
 
+    # AIOps 取证域工具名单（能力边界 = 决策权边界）
+    aiops_domain_tools: dict[str, list[str]] = {
+        "metrics": ["query_cpu_metrics", "query_memory_metrics", "query_active_alerts"],
+        "logs": [
+            "search_topic_by_service_name",
+            "get_topic_info_by_name",
+            "get_current_timestamp",
+            "search_log",
+        ],
+        "knowledge": ["retrieve_knowledge"],
+    }
+    aiops_investigator_model: str | None = None  # 默认回退到 rag_model
+
     @property
     def mcp_servers(self) -> dict[str, dict[str, Any]]:
         """获取完整的 MCP 服务器配置"""

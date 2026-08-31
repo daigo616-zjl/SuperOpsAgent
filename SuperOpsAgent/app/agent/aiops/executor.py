@@ -1,7 +1,5 @@
 """Executor 节点：校验并执行 Planner 指定的单个工具调用。"""
 
-import json
-import re
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any
@@ -13,11 +11,15 @@ from .models import (
     DiagnosticStep,
     ExecutionError,
     StepExecutionResult,
-    SuccessCriterion,
-    ValueReference,
 )
 from .state import PlanExecuteState
 from .tool_registry import InvalidToolArgumentsError, UnknownToolError, get_tool_registry
+from .tool_runtime import (
+    evaluate_criterion as _evaluate_criterion,
+    get_path as _get_path,
+    normalize_output as _normalize_output,
+    resolve_value as _resolve_value,
+)
 
 
 async def executor(state: PlanExecuteState) -> dict[str, Any]:
@@ -123,97 +125,6 @@ async def executor(state: PlanExecuteState) -> dict[str, Any]:
 
     logger.info(f"步骤 {step.id} 执行结束，状态={result.status}")
     return {"plan": plan, "execution_results": results + [result]}
-
-
-def _resolve_value(
-    value: Any,
-    context: dict[str, Any],
-    results: dict[str, StepExecutionResult],
-) -> Any:
-    if isinstance(value, dict) and value.get("source") in {"context", "step"}:
-        reference = ValueReference.model_validate(value)
-        if reference.source == "context":
-            resolved = _get_path(context, reference.path)
-        else:
-            result = results.get(reference.step_id or "")
-            if result is None:
-                raise KeyError(f"引用的步骤结果不存在: {reference.step_id}")
-            resolved = _get_path(result.output, reference.path)
-        if reference.offset is not None:
-            if isinstance(resolved, bool) or not isinstance(resolved, (int, float)):
-                raise ValueError("只有数值参数引用可以使用 offset")
-            resolved += reference.offset
-        return resolved
-    if isinstance(value, dict):
-        return {key: _resolve_value(item, context, results) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_resolve_value(item, context, results) for item in value]
-    return value
-
-
-def _get_path(value: Any, path: str | None) -> Any:
-    if not path:
-        return value
-    current = value
-    # Accept both JSON-style list indexes (topics[0].topic_id) and the dot
-    # notation used by the planner contract (topics.0.topic_id).
-    normalized_path = re.sub(r"\[(\d+)\]", r".\1", path).strip(".")
-    for part in normalized_path.split("."):
-        if isinstance(current, dict) and part in current:
-            current = current[part]
-        elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
-            current = current[int(part)]
-        else:
-            raise KeyError(f"字段路径不存在: {path}")
-    return current
-
-
-def _normalize_output(value: Any) -> Any:
-    if isinstance(value, list):
-        if len(value) == 1 and _is_text_content(value[0]):
-            return _normalize_output(value[0])
-        return [_normalize_output(item) for item in value]
-    if isinstance(value, dict):
-        if value.get("type") == "text" and "text" in value:
-            return _normalize_output(value["text"])
-        if "content" in value and len(value) == 1:
-            return _normalize_output(value["content"])
-        return {key: _normalize_output(item) for key, item in value.items()}
-    if isinstance(value, str):
-        try:
-            return _normalize_output(json.loads(value))
-        except json.JSONDecodeError:
-            return value
-    if hasattr(value, "model_dump"):
-        return _normalize_output(value.model_dump())
-    if value is None or isinstance(value, (int, float, bool)):
-        return value
-    return str(value)
-
-
-def _is_text_content(value: Any) -> bool:
-    if isinstance(value, dict):
-        return value.get("type") == "text" and "text" in value
-    return getattr(value, "type", None) == "text" and hasattr(value, "text")
-
-
-def _evaluate_criterion(criterion: SuccessCriterion, output: Any) -> CriterionResult:
-    try:
-        actual = _get_path(output, criterion.path)
-        operations = {
-            "exists": lambda: actual is not None,
-            "not_empty": lambda: actual not in (None, "", [], {}),
-            "eq": lambda: actual == criterion.expected,
-            "ne": lambda: actual != criterion.expected,
-            "gt": lambda: actual > criterion.expected,
-            "gte": lambda: actual >= criterion.expected,
-            "lt": lambda: actual < criterion.expected,
-            "lte": lambda: actual <= criterion.expected,
-        }
-        passed = bool(operations[criterion.operator]())
-        return CriterionResult(criterion=criterion, passed=passed, actual=actual)
-    except (KeyError, TypeError, ValueError) as exc:
-        return CriterionResult(criterion=criterion, passed=False, message=str(exc))
 
 
 def _completed_result(
