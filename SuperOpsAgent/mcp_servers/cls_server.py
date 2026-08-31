@@ -7,9 +7,15 @@ import logging
 import functools
 import json
 import os
+import re
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 from fastmcp import FastMCP
+
+try:
+    from mcp_servers.scenario_loader import get_active_scenario, noise_range, rng_for
+except ImportError:  # 以脚本方式直接运行时
+    from scenario_loader import get_active_scenario, noise_range, rng_for
 
 # 配置日志
 logging.basicConfig(
@@ -344,6 +350,95 @@ def search_topic_by_service_name(
     }
 
 
+# ============================================================
+# 剧本化日志生成（确定性：按分钟桶播种，分页稳定）
+# ============================================================
+
+NOISE_INFO_TEMPLATES = [
+    "正在同步元数据……",
+    "心跳检测正常",
+    "同步任务 #{n} 执行完成，耗时 {ms} ms",
+    "刷新本地缓存完成",
+    "处理分片 {n}/16 完成",
+]
+NOISE_WARN_TEMPLATES = [
+    "下游调用超时，已自动重试成功",
+    "线程池活跃度 {n}%，接近告警阈值",
+]
+NOISE_ERROR_TEMPLATES = [
+    "下游短暂超时（{ms} ms），重试后成功，已自愈",
+]
+
+TOPIC_APP_LOG = "topic-001"     # 全量日志（含噪声与剧本注入行）
+TOPIC_ERROR_LOG = "topic-002"   # 仅 ERROR 级别
+
+
+def _generate_logs_for_minute(scenario: Dict[str, Any], minute_start_ms: int) -> list:
+    """生成某个分钟桶内的日志行 [(epoch_ms, level, message), ...]。"""
+    minute_start = datetime.fromtimestamp(minute_start_ms / 1000)
+    minute_bucket = minute_start.strftime("%Y-%m-%d %H:%M")
+    rng = rng_for(scenario["id"], "logs", minute_bucket)
+    lines = []
+
+    def fmt(template: str) -> str:
+        return template.format(n=rng.randint(1, 999), ms=rng.randint(20, 4000))
+
+    lo, hi = noise_range(scenario)
+    for _ in range(rng.randint(lo, hi)):
+        lines.append((minute_start_ms + rng.randint(0, 59) * 1000,
+                      "INFO", fmt(rng.choice(NOISE_INFO_TEMPLATES))))
+    if rng.random() < 0.15:
+        lines.append((minute_start_ms + rng.randint(0, 59) * 1000,
+                      "WARN", fmt(rng.choice(NOISE_WARN_TEMPLATES))))
+    # 低频瞬时 ERROR（自愈型），防止“见 ERROR 即根因”
+    if rng.random() < 0.05:
+        lines.append((minute_start_ms + rng.randint(0, 59) * 1000,
+                      "ERROR", fmt(rng.choice(NOISE_ERROR_TEMPLATES))))
+    for pattern in scenario.get("log_patterns") or []:
+        for _ in range(int(pattern.get("per_minute", 1))):
+            lines.append((minute_start_ms + rng.randint(0, 59) * 1000,
+                          str(pattern.get("level", "ERROR")).upper(),
+                          str(pattern.get("message", ""))))
+
+    lines.sort(key=lambda item: item[0])
+    return lines
+
+
+def _generate_logs_for_window(scenario: Dict[str, Any], start_ms: int, end_ms: int) -> list:
+    logs = []
+    first_minute = (start_ms // 60000) * 60000
+    minute = first_minute
+    while minute <= end_ms:
+        logs.extend(_generate_logs_for_minute(scenario, minute))
+        minute += 60000
+    return logs
+
+
+def _parse_log_query(query: Optional[str]) -> tuple:
+    """解析 CLS 风格查询语法: level:ERROR AND "关键词"。
+
+    Returns:
+        (level, keywords): level 为大写级别或 None；keywords 为小写关键词列表。
+    """
+    level = None
+    keywords = []
+    if not query:
+        return level, keywords
+    tokens = re.split(r"\s+AND\s+", query.strip(), flags=re.IGNORECASE)
+    for token in tokens:
+        token = token.strip()
+        if not token:
+            continue
+        level_match = re.fullmatch(r"level\s*:\s*(\w+)", token, re.IGNORECASE)
+        if level_match:
+            level = level_match.group(1).upper()
+            continue
+        if len(token) >= 2 and token.startswith('"') and token.endswith('"'):
+            token = token[1:-1]
+        keywords.append(token.lower())
+    return level, keywords
+
+
 @mcp.tool()
 @log_tool_call
 def search_log(
@@ -351,7 +446,8 @@ def search_log(
     start_time: int,
     end_time: int,
     query: Optional[str] = None,
-    limit: int = 100
+    limit: int = 100,
+    offset: int = 0
 ) -> Dict[str, Any]:
     """基于提供的查询参数搜索日志。
 
@@ -375,9 +471,14 @@ def search_log(
             示例: 1708012345000
         
         query: 查询语句（可选，CLS 查询语法）
-            示例: "level:ERROR" 或 "message:异常"
-        
-        limit: 返回结果数量限制（默认100，可选）
+            支持 AND 组合的过滤条件:
+            - level:ERROR        按日志级别过滤（ERROR/WARN/INFO）
+            - "GC"               按关键词过滤（支持引号或裸词）
+            - 组合示例: level:ERROR AND "GC overhead"
+
+        limit: 单页返回条数限制（默认100，最大1000，可选）
+
+        offset: 分页偏移量（默认0，配合 next_offset/has_more 翻页）
 
     Returns:
         Dict: 搜索结果
@@ -386,7 +487,11 @@ def search_log(
             - end_time: 结束时间戳
             - query: 查询语句
             - limit: 结果限制
-            - total: 实际返回的日志条数
+            - total: 实际返回的日志条数（当前页）
+            - total_matched: 满足查询条件的日志总条数（跨所有页）
+            - offset: 当前页起始偏移量
+            - next_offset: 下一页偏移量（无更多数据时为 null）
+            - has_more: 是否还有更多数据
             - logs: 日志列表，每条日志包含:
                 * timestamp: 日志时间（格式: YYYY-MM-DD HH:MM:SS）
                 * level: 日志级别
@@ -409,61 +514,69 @@ def search_log(
             limit=100
         )
     """
-    # 根据 topic_id 返回不同的结果
-    if topic_id == "topic-001":
-        # topic-001: 应用日志，动态生成 INFO 日志
-        logs = []
-        current_time_ms = start_time
-        count = 0
-
-        # 计算最大可生成的日志条数（基于时间范围）
-        max_logs_by_time = int((end_time - start_time) / (60 * 1000)) + 1
-
-        # 实际生成的日志数量取 limit 和时间范围内最大日志数的较小值
-        actual_limit = min(limit, max_logs_by_time)
-
-        while current_time_ms <= end_time and count < actual_limit:
-            # 将毫秒时间戳转换为可读格式
-            log_time = datetime.fromtimestamp(current_time_ms / 1000)
-            time_str = log_time.strftime("%Y-%m-%d %H:%M:%S")
-
-            log_entry = {
-                "timestamp": time_str,
-                "level": "INFO",
-                "message": "正在同步元数据……"
-            }
-
-            logs.append(log_entry)
-            count += 1
-
-            # 下一条日志时间增加1分钟（60秒 * 1000毫秒）
-            current_time_ms += 60 * 1000
-
+    # 仅支持应用日志与错误日志两个主题
+    if topic_id not in (TOPIC_APP_LOG, TOPIC_ERROR_LOG):
         return {
             "topic_id": topic_id,
             "start_time": start_time,
             "end_time": end_time,
             "query": query,
             "limit": limit,
-            "total": len(logs),
-            "logs": logs,
-            "took_ms": 50,
-            "message": f"成功查询 {len(logs)} 条应用日志"
-        }
-    else:
-        # 其他 topic_id: 返回错误，表示 topic 不存在
-        return {
-            "topic_id": topic_id,
-            "start_time": start_time,
-            "end_time": end_time,
-            "query": query,
-            "limit": limit,
+            "offset": offset,
             "total": 0,
+            "total_matched": 0,
             "logs": [],
             "took_ms": 0,
             "error": f"主题不存在: {topic_id}",
             "message": f"错误: 未找到主题 {topic_id}，请检查 topic_id 是否正确"
         }
+
+    scenario = get_active_scenario()
+    level_filter, keywords = _parse_log_query(query)
+    limit = max(1, min(int(limit), 1000))
+    offset = max(0, int(offset))
+
+    all_logs = _generate_logs_for_window(scenario, start_time, end_time)
+    matched = []
+    for epoch_ms, level, message in all_logs:
+        if not (start_time <= epoch_ms <= end_time):
+            continue
+        if topic_id == TOPIC_ERROR_LOG and level != "ERROR":
+            continue
+        if level_filter and level != level_filter:
+            continue
+        if keywords and not all(k in message.lower() for k in keywords):
+            continue
+        matched.append((epoch_ms, level, message))
+
+    total_matched = len(matched)
+    page = matched[offset:offset + limit]
+    has_more = offset + limit < total_matched
+
+    logs = [
+        {
+            "timestamp": datetime.fromtimestamp(epoch_ms / 1000).strftime("%Y-%m-%d %H:%M:%S"),
+            "level": level,
+            "message": message,
+        }
+        for epoch_ms, level, message in page
+    ]
+
+    return {
+        "topic_id": topic_id,
+        "start_time": start_time,
+        "end_time": end_time,
+        "query": query,
+        "limit": limit,
+        "offset": offset,
+        "total": len(logs),
+        "total_matched": total_matched,
+        "next_offset": offset + len(logs) if has_more else None,
+        "has_more": has_more,
+        "logs": logs,
+        "took_ms": 50,
+        "message": f"成功查询 {len(logs)} 条日志，共匹配 {total_matched} 条"
+    }
 
 
 

@@ -1,0 +1,35 @@
+# 剧本：CPU 高是干扰项（确认偏误测试）
+# 症状：CPU 飙高与 CpuUsageHigh 告警最显眼，但真因是定时任务打满线程池；
+# 若直接按“CPU 高→扩容/杀进程”处理将无法恢复。
+id: distractor-cpu
+description: 定时全量同步任务并发过高打满线程池并触发重试风暴，CPU 飙高只是伴随症状
+service_name: data-sync-service
+ground_truth:
+  root_cause: "定时全量同步任务并发过高打满 sync-worker 线程池并触发补偿重试风暴，CPU 飙高是伴随症状而非根因"
+  key_evidence:
+    - "日志出现 thread pool 'sync-worker' exhausted 与任务拒绝"
+    - "日志出现 full-sync 定时任务启动与批量补偿重试"
+    - "CPU 曲线形态与定时任务启动时间吻合，而非流量驱动"
+alerts:
+  - alert_name: CpuUsageHigh
+    severity: critical
+    description: "CPU 使用率持续超过 80% 阈值"
+metrics:
+  cpu:
+    mode: spike_up
+    start: 12
+    peak: 96
+  memory:
+    mode: normal
+    start: 38
+    peak: 45
+log_patterns:
+  - level: ERROR
+    message: "thread pool 'sync-worker' exhausted, task rejected after 10s queue wait"
+    per_minute: 3
+  - level: WARN
+    message: "batch retry storm: 1200 tasks requeued for compensation"
+    per_minute: 2
+  - level: WARN
+    message: "scheduled job full-sync started, concurrency 64"
+    per_minute: 1

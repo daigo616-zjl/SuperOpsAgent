@@ -13,10 +13,14 @@ import logging
 import functools
 import json
 import os
-import random
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 from fastmcp import FastMCP
+
+try:
+    from mcp_servers.scenario_loader import get_active_scenario, rng_for
+except ImportError:  # 以脚本方式直接运行时
+    from scenario_loader import get_active_scenario, rng_for
 
 # 配置日志
 logging.basicConfig(
@@ -115,7 +119,122 @@ def generate_time_series(base_time: datetime, minutes_offset: int, format_str: s
     return result_time.strftime(format_str)
 
 
+# ============================================================
+# 剧本化指标曲线生成
+# ============================================================
 
+def _parse_interval(interval: str) -> int:
+    interval_minutes = 1
+    if interval.endswith('m'):
+        interval_minutes = int(interval[:-1])
+    elif interval.endswith('h'):
+        interval_minutes = int(interval[:-1]) * 60
+    return interval_minutes
+
+
+def _curve_value(mode: str, start: float, peak: float, t_index: int,
+                 total_points: int, rng, jitter: float) -> float:
+    """按剧本模式计算第 t_index 个数据点的基础值。"""
+    if mode == "spike_up":
+        # 旧版 CPU 曲线形态：低位几分钟后快速冲高（干扰项场景）
+        if t_index < 3:
+            value = start + t_index * 0.5
+        else:
+            growth = (peak - start) / 8.0
+            value = min(start + (t_index - 2) * growth, peak)
+    elif mode == "step_climb":
+        # 阶梯式抬升（GC 压力下的内存特征）
+        step = max(1, total_points // 5)
+        progress = min(1.0, (t_index // step + 1) / 5.0)
+        value = start + (peak - start) * progress
+    elif mode == "sawtooth_oom":
+        # 锯齿状：爬升至峰值后骤降（OOMKilled 重启特征）
+        cycle = 12
+        r = t_index % cycle
+        value = start + (peak - start) * (r / (cycle - 1))
+    elif mode == "plateau_moderate":
+        # 中度升高后维持平台
+        progress = min(1.0, t_index / 8.0)
+        value = start + (peak - start) * progress
+    else:  # normal
+        value = start
+    value += rng.uniform(-jitter, jitter)
+    return round(max(0.0, min(100.0, value)), 1)
+
+
+def _generate_metric_response(
+    service_name: str,
+    metric_key: str,
+    metric_name: str,
+    default_start: float,
+    default_peak: float,
+    alert_threshold: float,
+    jitter: float,
+    pressure_key: str,
+    alert_message_high: str,
+    start_time: Optional[str],
+    end_time: Optional[str],
+    interval: str,
+) -> Dict[str, Any]:
+    start_dt = parse_time_or_default(start_time, default_offset_hours=-1)
+    end_dt = parse_time_or_default(end_time, default_offset_hours=0)
+    interval_minutes = _parse_interval(interval)
+    scenario = get_active_scenario()
+    cfg = (scenario.get("metrics") or {}).get(metric_key) or {}
+    mode = cfg.get("mode", "normal")
+    start = float(cfg.get("start", default_start))
+    peak = float(cfg.get("peak", default_peak))
+    total_points = max(1, int((end_dt - start_dt).total_seconds() // 60) + 1)
+
+    data_points = []
+    current_time = start_dt
+    t_index = 0
+    while current_time <= end_dt:
+        rng = rng_for(scenario["id"], f"metric:{metric_key}",
+                      current_time.strftime("%Y%m%d%H%M"))
+        value = _curve_value(mode, start, peak, t_index, total_points, rng, jitter)
+        point: Dict[str, Any] = {
+            "timestamp": current_time.strftime("%H:%M"),
+            "value": value,
+        }
+        if metric_name == "memory_usage_percent":
+            point["used_gb"] = round(value / 100.0 * 8.0, 2)
+            point["total_gb"] = 8.0
+        data_points.append(point)
+        current_time += timedelta(minutes=interval_minutes)
+        t_index += 1
+
+    if not data_points:
+        return {
+            "service_name": service_name,
+            "metric_name": metric_name,
+            "interval": interval,
+            "data_points": [],
+            "statistics": {},
+        }
+
+    values = [d["value"] for d in data_points]
+    max_value = max(values)
+    pressure = max_value > alert_threshold
+    statistics = {
+        "avg": round(sum(values) / len(values), 2),
+        "max": max_value,
+        "min": min(values),
+        pressure_key: pressure,
+        "p95": round(sorted(values)[int(len(values) * 0.95)] if len(values) > 1 else max_value, 2),
+    }
+    return {
+        "service_name": service_name,
+        "metric_name": metric_name,
+        "interval": interval,
+        "data_points": data_points,
+        "statistics": statistics,
+        "alert_info": {
+            "triggered": pressure,
+            "threshold": alert_threshold,
+            "message": alert_message_high if pressure else f"{metric_name} 正常",
+        },
+    }
 
 
 # ============================================================
@@ -188,91 +307,20 @@ def query_cpu_metrics(
             start_time="2026-02-14 10:00:00"
         )
     """
-    # 解析时间参数
-    start_dt = parse_time_or_default(start_time, default_offset_hours=-1)
-    end_dt = parse_time_or_default(end_time, default_offset_hours=0)
-    
-    # 解析间隔时间（interval: 1m, 5m, 1h 等）
-    interval_minutes = 1  # 默认 1 分钟
-    if interval.endswith('m'):
-        interval_minutes = int(interval[:-1])
-    elif interval.endswith('h'):
-        interval_minutes = int(interval[:-1]) * 60
-
-    # 动态生成 CPU 使用率数据：从低到高逐渐增长
-    data_points = []
-    current_time = start_dt
-    time_index = 0
-
-    # 初始 CPU 使用率（10%）
-    base_cpu = 10.0
-
-    while current_time <= end_dt:
-        # CPU 使用率逐渐升高的算法：
-        # - 前几个数据点保持在 10% 左右
-        # - 然后开始快速上升
-        # - 最终达到 95% 左右
-
-        if time_index < 3:
-            # 初始阶段：10% 左右波动
-            cpu_value = base_cpu + (time_index * 0.5)
-        else:
-            # 上升阶段：使用指数增长模型
-            growth_factor = (time_index - 2) * 8.5
-            cpu_value = min(base_cpu + growth_factor, 96.0)
-
-        # 添加一些随机波动（±2%）
-        cpu_value = round(cpu_value + random.uniform(-2, 2), 1)
-        cpu_value = max(0, min(100, cpu_value))  # 确保在 0-100 范围内
-
-        data_point = {
-            "timestamp": current_time.strftime("%H:%M"),
-            "value": cpu_value,
-            "process_id": "pid-12345"
-        }
-
-        data_points.append(data_point)
-
-        # 下一个时间点
-        current_time += timedelta(minutes=interval_minutes)
-        time_index += 1
-
-    # 计算统计信息
-    if data_points:
-        values = [d["value"] for d in data_points]
-        avg_value = round(sum(values) / len(values), 2)
-        max_value = max(values)
-        min_value = min(values)
-
-        # 检测是否有 CPU 突增（超过 80%）
-        spike_detected = max_value > 80.0
-
-        return {
-            "service_name": service_name,
-            "metric_name": "cpu_usage_percent",
-            "interval": interval,
-            "data_points": data_points,
-            "statistics": {
-                "avg": avg_value,
-                "max": max_value,
-                "min": min_value,
-                "p95": round(sorted(values)[int(len(values) * 0.95)] if len(values) > 1 else max_value, 2),
-                "spike_detected": spike_detected
-            },
-            "alert_info": {
-                "triggered": spike_detected,
-                "threshold": 80.0,
-                "message": "CPU 使用率持续超过 80% 阈值" if spike_detected else "CPU 使用率正常"
-            }
-        }
-    else:
-        return {
-            "service_name": service_name,
-            "metric_name": "cpu_usage_percent",
-            "interval": interval,
-            "data_points": [],
-            "statistics": {},
-        }
+    return _generate_metric_response(
+        service_name=service_name,
+        metric_key="cpu",
+        metric_name="cpu_usage_percent",
+        default_start=10.0,
+        default_peak=96.0,
+        alert_threshold=80.0,
+        jitter=2.0,
+        pressure_key="spike_detected",
+        alert_message_high="CPU 使用率持续超过 80% 阈值",
+        start_time=start_time,
+        end_time=end_time,
+        interval=interval,
+    )
 
 
 @mcp.tool()
@@ -336,97 +384,86 @@ def query_memory_metrics(
             interval="5m"
         )
     """
-    # 解析时间参数
-    start_dt = parse_time_or_default(start_time, default_offset_hours=-1)
-    end_dt = parse_time_or_default(end_time, default_offset_hours=0)
-    
-    # 解析间隔时间（interval: 1m, 5m, 1h 等）
-    interval_minutes = 1  # 默认 1 分钟
-    if interval.endswith('m'):
-        interval_minutes = int(interval[:-1])
-    elif interval.endswith('h'):
-        interval_minutes = int(interval[:-1]) * 60
-    
-    # 动态生成内存使用率数据：从低到高逐渐增长
-    data_points = []
-    current_time = start_dt
-    time_index = 0
-    
-    # 初始内存使用率（30%）
-    base_memory = 30.0
-    total_gb = 8.0  # 总内存 8GB
-    
-    while current_time <= end_dt:
-        # 内存使用率逐渐升高的算法：
-        # - 前几个数据点保持在 30% 左右
-        # - 然后开始逐步上升
-        # - 最终达到 85% 左右
-        
-        if time_index < 3:
-            # 初始阶段：30% 左右波动
-            memory_value = base_memory + (time_index * 1.0)
-        else:
-            # 上升阶段：使用线性增长模型（内存增长比 CPU 慢）
-            growth_factor = (time_index - 2) * 5.5
-            memory_value = min(base_memory + growth_factor, 85.0)
-        
-        # 添加一些随机波动（±1%）
-        memory_value = round(memory_value + random.uniform(-1, 1), 1)
-        memory_value = max(0, min(100, memory_value))  # 确保在 0-100 范围内
-        
-        # 计算已使用内存（GB）
-        used_gb = round((memory_value / 100.0) * total_gb, 2)
-        
-        data_point = {
-            "timestamp": current_time.strftime("%H:%M"),
-            "value": memory_value,
-            "used_gb": used_gb,
-            "total_gb": total_gb
-        }
-        
-        data_points.append(data_point)
-        
-        # 下一个时间点
-        current_time += timedelta(minutes=interval_minutes)
-        time_index += 1
-    
-    # 计算统计信息
-    if data_points:
-        values = [d["value"] for d in data_points]
-        avg_value = round(sum(values) / len(values), 2)
-        max_value = max(values)
-        min_value = min(values)
-        
-        # 检测是否有内存压力（超过 70%）
-        memory_pressure = max_value > 70.0
-        
-        return {
-            "service_name": service_name,
-            "metric_name": "memory_usage_percent",
-            "interval": interval,
-            "data_points": data_points,
-            "statistics": {
-                "avg": avg_value,
-                "max": max_value,
-                "min": min_value,
-                "p95": round(sorted(values)[int(len(values) * 0.95)] if len(values) > 1 else max_value, 2),
-                "memory_pressure": memory_pressure
-            },
-            "alert_info": {
-                "triggered": memory_pressure,
-                "threshold": 70.0,
-                "message": "内存使用率超过 70% 阈值，存在内存压力" if memory_pressure else "内存使用率正常"
-            }
-        }
-    else:
-        return {
-            "service_name": service_name,
-            "metric_name": "memory_usage_percent",
-            "interval": interval,
-            "data_points": [],
-            "statistics": {},
-            "error": "时间范围无效或没有生成数据点"
-        }
+    return _generate_metric_response(
+        service_name=service_name,
+        metric_key="memory",
+        metric_name="memory_usage_percent",
+        default_start=30.0,
+        default_peak=85.0,
+        alert_threshold=70.0,
+        jitter=1.0,
+        pressure_key="memory_pressure",
+        alert_message_high="内存使用率超过 70% 阈值，存在内存压力",
+        start_time=start_time,
+        end_time=end_time,
+        interval=interval,
+    )
+
+
+def _active_alerts_response(service_name: str, level: Optional[str]) -> Dict[str, Any]:
+    scenario = get_active_scenario()
+    scenario_service = str(scenario.get("service_name", "")).lower()
+    requested = service_name.lower()
+    matched = scenario_service in requested or requested in scenario_service
+
+    alerts = []
+    if matched:
+        triggered_at = (datetime.now() - timedelta(minutes=25)).strftime("%Y-%m-%d %H:%M:%S")
+        for alert in scenario.get("alerts") or []:
+            if level and str(alert.get("severity", "")).lower() != level.lower():
+                continue
+            alerts.append({
+                "alert_name": alert.get("alert_name"),
+                "severity": alert.get("severity"),
+                "description": alert.get("description"),
+                "triggered_at": triggered_at,
+            })
+
+    return {
+        "service_name": service_name,
+        "total": len(alerts),
+        "alerts": alerts,
+        "message": f"查询到 {len(alerts)} 条活跃告警" if alerts else "当前无活跃告警",
+    }
+
+
+@mcp.tool()
+@log_tool_call
+def query_active_alerts(
+    service_name: str,
+    level: Optional[str] = None
+) -> Dict[str, Any]:
+    """查询服务当前活跃的告警清单。
+
+    排障的第一步：先看有哪些告警触发，再决定取证方向。
+
+    Args:
+        service_name: 服务名称（必填）
+            示例: "data-sync-service"
+
+        level: 告警级别过滤（可选）
+            可选值: "critical"（严重）, "warning"（警告）, "info"（提示）
+            默认值: 不传则返回全部级别的告警
+
+    Returns:
+        Dict: 活跃告警清单
+            - service_name: 服务名称
+            - total: 告警数量
+            - alerts: 告警列表，每条包含:
+                * alert_name: 告警名称（如 JvmGCPauseHigh、PodOOMKilled）
+                * severity: 告警级别
+                * description: 告警描述（含触发条件与关键数值）
+                * triggered_at: 触发时间
+            - message: 查询状态消息
+
+    使用示例:
+        # 示例1: 查询全部活跃告警
+        query_active_alerts(service_name="data-sync-service")
+
+        # 示例2: 只看严重告警
+        query_active_alerts(service_name="data-sync-service", level="critical")
+    """
+    return _active_alerts_response(service_name, level)
 
 
 

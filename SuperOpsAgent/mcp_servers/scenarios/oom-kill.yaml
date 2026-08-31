@@ -1,0 +1,34 @@
+# 剧本：堆内存泄漏导致 OOMKilled
+# 症状：实例反复重启；鉴别证据为 OutOfMemoryError 与锯齿状内存曲线
+id: oom-kill
+description: 本地缓存无上限增长造成堆内存泄漏，容器达到 memory limit 被 OOMKilled
+service_name: data-sync-service
+ground_truth:
+  root_cause: "本地缓存无上限增长造成堆内存泄漏，容器达到 memory limit 后被 OOMKilled 并反复重启"
+  key_evidence:
+    - "日志出现 java.lang.OutOfMemoryError: Java heap space"
+    - "内存曲线呈锯齿状：爬升至 95% 后骤降（重启）再爬升"
+    - "流量平稳，内存增长与流量无关，符合泄漏特征"
+alerts:
+  - alert_name: PodOOMKilled
+    severity: critical
+    description: "容器退出原因 OOMKilled，最近 30 分钟重启 3 次"
+  - alert_name: ServiceInstanceRestart
+    severity: warning
+    description: "实例 data-sync-service-7f9 重启，退出码 137"
+metrics:
+  cpu:
+    mode: normal
+    start: 22
+    peak: 30
+  memory:
+    mode: sawtooth_oom
+    start: 40
+    peak: 95
+log_patterns:
+  - level: ERROR
+    message: "java.lang.OutOfMemoryError: Java heap space"
+    per_minute: 2
+  - level: WARN
+    message: "heap usage 93% after full GC, old gen not reclaimable, suspect leak"
+    per_minute: 3

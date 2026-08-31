@@ -1,0 +1,22 @@
+# 剧本：无故障
+# 症状：无告警、指标平稳、日志仅有噪声；测试"无异常时不应编造根因"
+id: no-fault
+description: 系统运行正常，用于验证引擎在无故障场景下收敛到"无异常"结论
+service_name: data-sync-service
+ground_truth:
+  root_cause: "无故障：指标与日志均在正常范围内，未触发任何告警"
+  key_evidence:
+    - "query_active_alerts 返回空"
+    - "CPU/内存曲线平稳"
+    - "日志无 ERROR（或仅偶发已自愈的瞬时错误）"
+alerts: []
+metrics:
+  cpu:
+    mode: normal
+    start: 20
+    peak: 28
+  memory:
+    mode: normal
+    start: 35
+    peak: 42
+log_patterns: []

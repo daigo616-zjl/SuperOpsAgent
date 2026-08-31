@@ -1,0 +1,37 @@
+# 剧本：数据库慢 SQL 导致连接池耗尽
+# 症状：接口响应变慢；指标几乎正常，鉴别证据集中在连接池日志
+id: db-slow-query
+description: 未走索引的慢 SQL 长时间占用数据库连接，应用连接池耗尽
+service_name: data-sync-service
+ground_truth:
+  root_cause: "数据库慢 SQL（sync_record 全表扫描）长时间占用连接，导致应用数据库连接池耗尽"
+  key_evidence:
+    - "日志出现 timeout waiting for connection from pool"
+    - "日志出现耗时 8000ms 以上的 SELECT 慢查询"
+    - "CPU 与内存指标均正常，排除资源类根因"
+alerts:
+  - alert_name: DatabaseConnectionPoolExhausted
+    severity: critical
+    description: "连接池活跃连接连续 5 分钟超过上限的 90%，等待队列 48"
+  - alert_name: SlowQueryDetected
+    severity: warning
+    description: "检测到耗时超过 5000 ms 的 SELECT 语句"
+metrics:
+  cpu:
+    mode: normal
+    start: 28
+    peak: 35
+  memory:
+    mode: normal
+    start: 42
+    peak: 50
+log_patterns:
+  - level: ERROR
+    message: "timeout waiting for connection from pool after 30000 ms"
+    per_minute: 5
+  - level: ERROR
+    message: "slow query took 8321 ms: SELECT * FROM sync_record WHERE status=0"
+    per_minute: 3
+  - level: WARN
+    message: "connection wait queue size 48 exceeds warning threshold 20"
+    per_minute: 4

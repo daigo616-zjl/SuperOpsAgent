@@ -1,0 +1,36 @@
+# 剧本：JVM GC 压力
+# 症状：请求超时、CPU 中度升高；鉴别证据在日志中的 Full GC / GC pause 模式
+id: gc-pressure
+description: 老年代对象晋升失败导致 Full GC 频繁，STW 时间超阈值引发请求超时
+service_name: data-sync-service
+ground_truth:
+  root_cause: "JVM GC 压力：老年代晋升失败导致 Full GC 频繁、STW 超过阈值，引发请求批量超时"
+  key_evidence:
+    - "日志出现 GC pause 超过阈值与 GC overhead limit exceeded"
+    - "内存曲线呈阶梯式抬升，CPU 中度升高"
+alerts:
+  - alert_name: JvmGCPauseHigh
+    severity: critical
+    description: "JVM Full GC 平均暂停时间 4200 ms，超过阈值 1000 ms"
+  - alert_name: CpuUsageHigh
+    severity: warning
+    description: "CPU 使用率 65%，伴随 GC 线程活跃"
+metrics:
+  cpu:
+    mode: plateau_moderate
+    start: 25
+    peak: 65
+  memory:
+    mode: step_climb
+    start: 45
+    peak: 90
+log_patterns:
+  - level: ERROR
+    message: "GC pause 4200 ms exceeds threshold 1000 ms, allocation stalled"
+    per_minute: 4
+  - level: ERROR
+    message: "GC overhead limit exceeded, old gen occupancy 96%"
+    per_minute: 2
+  - level: WARN
+    message: "Full GC triggered by promotion failure, heap 6.8G/8G"
+    per_minute: 6
