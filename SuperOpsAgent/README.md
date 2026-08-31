@@ -20,6 +20,55 @@ http://localhost:18000/api/health
 
 `.env` 仅用于本地配置，不应提交到 Git；提交配置模板请使用 `.env.example`。
 
+## AIOps 多 Agent 诊断（星型编排）
+
+`/api/aiops` 的诊断默认由**星型拓扑多 Agent 编排**驱动（`app/agent/aiops/`）：
+
+- **Supervisor** 是唯一中枢，确定性状态机路由（不调 LLM）：无假设 → 假设生成；
+  无指令 → 确定性生成 metrics/logs/knowledge 三域取证任务并扇出；有新证据 →
+  评审（淘汰/加钻/收敛）；预算耗尽 → 按当前证据收敛输出。
+- **Investigators（取证域）** 只与 Supervisor 通信，各自跑 ReAct 子图调用
+  MCP 工具；证据出处（ClaimProvenance）由代码从真实工具调用记录确定性构建，
+  模型无法虚构 provenance。
+- **Reporter** 流式生成最终报告，并按证据卡 claim 白名单剥离未支撑的
+  `[ev-*]` 引用（反幻觉）。
+
+引擎通过 `AIOPS_ENGINE` 切换（`multiagent` 默认 / `legacy` 保留旧
+plan-execute-replan 流程用于 A/B 对比）。
+
+### 预算与超时配置
+
+| 环境变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `AIOPS_MAX_ROUNDS` | 6 | 编排最大轮数 |
+| `AIOPS_MAX_INVOCATIONS` | 60 | LLM 迭代配额（每轮派发预扣各任务 max_iterations） |
+| `AIOPS_MAX_WALL_SECONDS` | 240 | 诊断墙钟预算 |
+| `AIOPS_MIN_DISPATCH_WALL_SECONDS` | 90 | 剩余墙钟低于该值不再派发新取证任务 |
+| `AIOPS_INVESTIGATOR_TIMEOUT` | 120 | 取证 LLM 单次调用超时（非流式工具调用较慢，过短会触发重试/熔断级联） |
+| `AIOPS_INVESTIGATOR_MODEL` 等 | 回退 `RAG_MODEL` | 各角色模型可单独覆盖 |
+
+### Mock 故障剧本
+
+`mcp_servers/scenarios/*.yaml` 提供剧本化故障注入（告警清单、指标曲线塑形、
+日志错误模式、`ground_truth.root_cause`）。通过 `MOCK_SCENARIO` 环境变量选择，
+可用剧本：`db-slow-query`、`distractor-cpu`、`gc-pressure`、`no-fault`、
+`oom-kill`。同一剧本数据按时间窗确定性播种。
+
+### A/B 双引擎基准
+
+```bash
+# 先停掉 start-windows.bat 启动的服务（基准需要独占 18003/18004 端口）
+python scripts/run_aiops_scenarios.py                # 5 剧本 × 2 引擎 × 3 次
+python scripts/run_aiops_scenarios.py --runs 1       # 快速全量（10 次）
+python scripts/run_aiops_scenarios.py --scenarios gc-pressure --engines multiagent
+python scripts/run_aiops_scenarios.py --no-judge     # 只跑诊断不评分
+```
+
+每个剧本独占启动一组 mock MCP 子进程，跑完即停。判分使用 `EVAL_MODEL`
+（默认 qwen-max）做根因命中与幻觉审计；门禁：**multiagent 命中率 ≥ legacy
+且 幻觉率 < legacy**，exit code 反映门禁结果。明细写入
+`eval/reports/aiops/`（已 gitignore）。
+
 ## PostgreSQL 权威 RAG 文档库
 
 知识文档原文、索引注册表和索引任务均保存在 PostgreSQL。Milvus 与
