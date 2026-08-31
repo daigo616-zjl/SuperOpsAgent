@@ -122,12 +122,16 @@ class BudgetLedger(BaseModel):
     max_invocations: int = Field(default=60, ge=1)
     started_at: datetime = Field(default_factory=datetime.now)
     max_wall_seconds: float = Field(default=240.0, gt=0)
+    min_dispatch_wall_seconds: float = Field(default=90.0, gt=0)
 
     def remaining_rounds(self) -> int:
         return self.max_rounds - self.round
 
     def remaining_invocations(self) -> int:
         return self.max_invocations - self.invocations
+
+    def remaining_wall_seconds(self, now: datetime | None = None) -> float:
+        return max(0.0, self.max_wall_seconds - self.elapsed_seconds(now))
 
     def elapsed_seconds(self, now: datetime | None = None) -> float:
         current = now or datetime.now()

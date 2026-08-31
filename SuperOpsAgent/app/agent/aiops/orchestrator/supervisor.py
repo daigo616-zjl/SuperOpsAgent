@@ -123,6 +123,17 @@ def _decide(
         )
 
     pending = [d for d in directives if d.id not in dispatched]
+    if (
+        pending or not state.get("directives")
+    ) and budget.remaining_wall_seconds() < budget.min_dispatch_wall_seconds:
+        return SupervisorDecision(
+            action="converge",
+            converged_hypothesis_id=converged_hypothesis_id,
+            reason=(
+                f"剩余墙钟 {budget.remaining_wall_seconds():.0f}s 不足以完成取证，"
+                "按当前证据收敛输出"
+            ),
+        )
     if not pending and not state.get("directives"):
         pending = _default_directives(budget.round, active, state.get("input", ""))
         if pending:

@@ -78,8 +78,10 @@ class LLMFactory:
         enable_thinking: bool | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
+        timeout: float | None = None,
     ) -> ResilientChatModel:
         """创建地域、凭据配置一致的 ChatQwen 客户端。"""
+        resolved_timeout = timeout if timeout is not None else config.llm_timeout
         llm = ChatQwen(
             model=model,
             temperature=temperature,
@@ -103,7 +105,7 @@ class LLMFactory:
         return build_resilient_model(
             llm,
             model_name=model,
-            timeout=config.llm_timeout,
+            timeout=resolved_timeout,
             max_retries=config.llm_max_retries,
             max_concurrency=config.llm_max_concurrency,
             min_interval=config.llm_min_interval,

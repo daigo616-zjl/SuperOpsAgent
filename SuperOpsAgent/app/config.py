@@ -138,6 +138,11 @@ class Settings(BaseSettings):
     aiops_max_rounds: int = Field(default=6, ge=1)
     aiops_max_invocations: int = Field(default=60, ge=1)
     aiops_max_wall_seconds: float = Field(default=240.0, gt=0)
+    # 剩余墙钟低于该值时不再派发新取证任务（一次取证 + 草稿生成约需 60-120s）
+    aiops_min_dispatch_wall_seconds: float = Field(default=90.0, gt=0)
+    # 取证 LLM 单次调用超时：非流式工具调用偶发超过通用 llm_timeout(30s)，
+    # 过短的超时会触发重试与熔断级联，烧光整段 wall 预算
+    aiops_investigator_timeout: float = Field(default=120.0, gt=0)
     aiops_hypothesizer_model: str | None = None  # 默认回退到 rag_model
     aiops_adjudicator_model: str | None = None  # 默认回退到 rag_model
     aiops_reporter_model: str | None = None  # 默认回退到 rag_model

@@ -104,7 +104,9 @@ def patch_run_environment(
     monkeypatch.setattr(
         base_module,
         "LLMFactory",
-        SimpleNamespace(create_qwen_chat_model=lambda model, temperature: FakeLlm(chain)),
+        SimpleNamespace(
+            create_qwen_chat_model=lambda model, temperature, **_kwargs: FakeLlm(chain)
+        ),
     )
     monkeypatch.setattr(base_module, "create_react_agent", lambda llm, tools, prompt: agent)
 
@@ -284,6 +286,24 @@ async def test_run_investigation_accepts_corrected_second_draft(monkeypatch) -> 
 
     assert card.claims[0].claim_id == "ev-d1-metrics-1"
     assert len(chain.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_run_investigation_accepts_global_hypothesis_reference(monkeypatch) -> None:
+    """模型引用 directive 子集之外、但存在于全局候选假设中的 ID 不应作废整卡。"""
+    agent = FakeAgent(make_agent_messages())
+    chain = FakeStructuredChain([make_draft(call_index=0, hypothesis_ids=["hyp-oom"])])
+    patch_run_environment(monkeypatch, agent=agent, chain=chain)
+
+    card = await base_module.run_investigation(
+        make_directive("metrics", hypothesis_ids=["hyp-gc"]),
+        DiagnosisContext(service_name="data-sync-service"),
+        domain="metrics",
+        system_prompt="prompt",
+        hypotheses=[{"id": "hyp-oom", "statement": "内存耗尽"}],
+    )
+
+    assert card.claims[0].hypothesis_ids == ["hyp-oom"]
 
 
 @pytest.mark.asyncio

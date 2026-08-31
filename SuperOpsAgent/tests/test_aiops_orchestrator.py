@@ -1,6 +1,7 @@
 """星型编排器测试：拓扑铁律、确定性路由、扇出、淘汰与白名单剥离。"""
 
 import importlib
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -113,6 +114,17 @@ def test_supervisor_dispatches_default_directives_for_all_domains() -> None:
     assert decision.action == "dispatch"
     assert {d.target_domain for d in decision.directives} == {"metrics", "logs", "knowledge"}
     assert update["budget"].invocations > 0
+
+
+def test_supervisor_converges_when_wall_time_insufficient_for_dispatch() -> None:
+    started = datetime.now() - timedelta(seconds=20)
+    budget = BudgetLedger(
+        max_wall_seconds=100.0, min_dispatch_wall_seconds=90.0, started_at=started
+    )
+    state = make_state(hypotheses=[make_hypothesis()], budget=budget)
+    update = supervisor_module.supervisor(state)
+    assert update["decision"].action == "converge"
+    assert "剩余墙钟" in update["decision"].reason
 
 
 def test_supervisor_dispatches_adjudicator_new_directives() -> None:

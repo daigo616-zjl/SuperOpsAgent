@@ -130,7 +130,12 @@ def _user_prompt(directive: Directive, context: Any, hypotheses: list[dict[str, 
     return "\n".join(lines)
 
 
-def _validate_draft(draft: EvidenceDraft, record_count: int, directive: Directive) -> str | None:
+def _validate_draft(
+    draft: EvidenceDraft,
+    record_count: int,
+    directive: Directive,
+    allowed_hypothesis_ids: set[str],
+) -> str | None:
     """返回校验错误描述，None 表示通过。"""
     if not draft.claims:
         return "claims 不能为空"
@@ -139,9 +144,9 @@ def _validate_draft(draft: EvidenceDraft, record_count: int, directive: Directiv
             return f"claims[{index}].call_index={claim.call_index} 超出实际工具调用数 {record_count}"
         if not claim.excerpt.strip():
             return f"claims[{index}].excerpt 不能为空"
-        unknown = set(claim.hypothesis_ids) - set(directive.hypothesis_ids)
+        unknown = set(claim.hypothesis_ids) - allowed_hypothesis_ids
         if unknown:
-            return f"claims[{index}].hypothesis_ids 引用了未指定的假设: {sorted(unknown)}"
+            return f"claims[{index}].hypothesis_ids 引用了未知的假设: {sorted(unknown)}"
     return None
 
 
@@ -193,7 +198,9 @@ async def run_investigation(
     logger.info(f"=== Investigator[{domain}]：执行指令 {directive.id} ===")
     registry = await get_domain_registry(domain)
     model_name = config.aiops_investigator_model or config.rag_model
-    llm = LLMFactory.create_qwen_chat_model(model=model_name, temperature=0)
+    llm = LLMFactory.create_qwen_chat_model(
+        model=model_name, temperature=0, timeout=config.aiops_investigator_timeout
+    )
     agent = create_react_agent(
         llm,
         tools=list(registry.handlers.values()),
@@ -227,12 +234,17 @@ async def run_investigation(
     ]
     # 与 Planner 相同的一次校验重试：结构化输出偶发引用越界时把
     # 明确错误反馈给模型重新声明，避免可修正错误终止整轮诊断。
+    # 允许引用 directive 圈定的假设加上全局候选假设：prompt 中列出了全部
+    # 候选假设，模型引用 directive 子集之外的假设不应导致整卡作废。
+    allowed_hypothesis_ids = set(directive.hypothesis_ids) | {
+        item.get("id") for item in hypotheses or [] if item.get("id")
+    }
     draft: EvidenceDraft | None = None
     last_error: str | None = None
     for attempt in range(2):
         raw = await draft_chain.ainvoke(draft_messages)
         candidate = raw if isinstance(raw, EvidenceDraft) else EvidenceDraft.model_validate(raw)
-        last_error = _validate_draft(candidate, len(records), directive)
+        last_error = _validate_draft(candidate, len(records), directive, allowed_hypothesis_ids)
         if last_error is None:
             draft = candidate
             break
