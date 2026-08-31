@@ -1,4 +1,4 @@
-"""PostgreSQL 连接池与知识库 schema 初始化。"""
+"""PostgreSQL 连接池与 schema 初始化。"""
 
 from pathlib import Path
 
@@ -7,6 +7,12 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from app.config import config
+
+# 有序迁移清单：新增 migration 必须登记于此，否则不会被执行
+MIGRATIONS: list[str] = [
+    "001_postgres_knowledge.sql",
+    "002_aiops_evidence.sql",
+]
 
 
 class PostgresManager:
@@ -39,10 +45,11 @@ class PostgresManager:
         logger.info("PostgreSQL 权威知识库连接成功")
 
     def _initialize_schema(self) -> None:
-        schema_path = Path(__file__).resolve().parents[2] / "migrations" / "001_postgres_knowledge.sql"
-        schema_sql = schema_path.read_text(encoding="utf-8")
+        migrations_dir = Path(__file__).resolve().parents[2] / "migrations"
         with self.engine.begin() as connection:
-            connection.exec_driver_sql(schema_sql)
+            for migration in MIGRATIONS:
+                schema_sql = (migrations_dir / migration).read_text(encoding="utf-8")
+                connection.exec_driver_sql(schema_sql)
 
     def health_check(self) -> bool:
         try:
