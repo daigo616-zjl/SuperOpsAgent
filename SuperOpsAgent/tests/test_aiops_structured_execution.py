@@ -392,7 +392,7 @@ async def test_generate_response_forwards_each_model_chunk(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_aiops_service_forwards_chunks_without_duplicate_report() -> None:
+async def test_aiops_service_forwards_chunks_without_duplicate_report(monkeypatch) -> None:
     plan = DiagnosticPlan(goal="诊断 CPU", steps=[make_step()])
 
     class FakeGraph:
@@ -408,6 +408,7 @@ async def test_aiops_service_forwards_chunks_without_duplicate_report() -> None:
 
     service = AIOpsService.__new__(AIOpsService)
     service.graph = FakeGraph()
+    monkeypatch.setattr(aiops_service_module.config, "aiops_engine", "legacy")
 
     events = [event async for event in service.execute("诊断 CPU", session_id="test")]
 
@@ -464,6 +465,7 @@ async def test_graph_returns_to_executor_after_replan(monkeypatch) -> None:
     monkeypatch.setattr(aiops_service_module, "planner", fake_planner)
     monkeypatch.setattr(aiops_service_module, "executor", fake_executor)
     monkeypatch.setattr(aiops_service_module, "replanner", fake_replanner)
+    monkeypatch.setattr(aiops_service_module.config, "aiops_engine", "legacy")
     service = AIOpsService()
 
     events = [event async for event in service.execute("诊断 CPU", session_id="replan-test")]

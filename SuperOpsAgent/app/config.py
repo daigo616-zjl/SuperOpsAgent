@@ -5,6 +5,7 @@
 
 from typing import Any
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -131,6 +132,15 @@ class Settings(BaseSettings):
         "knowledge": ["retrieve_knowledge"],
     }
     aiops_investigator_model: str | None = None  # 默认回退到 rag_model
+
+    # AIOps 多 Agent 编排预算与角色模型
+    aiops_engine: str = "multiagent"  # legacy | multiagent
+    aiops_max_rounds: int = Field(default=6, ge=1)
+    aiops_max_invocations: int = Field(default=60, ge=1)
+    aiops_max_wall_seconds: float = Field(default=240.0, gt=0)
+    aiops_hypothesizer_model: str | None = None  # 默认回退到 rag_model
+    aiops_adjudicator_model: str | None = None  # 默认回退到 rag_model
+    aiops_reporter_model: str | None = None  # 默认回退到 rag_model
 
     @property
     def mcp_servers(self) -> dict[str, dict[str, Any]]:

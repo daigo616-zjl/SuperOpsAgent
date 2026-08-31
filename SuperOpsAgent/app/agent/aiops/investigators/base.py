@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from app.config import config
 from app.core.llm_factory import LLMFactory
+from app.tools.knowledge_tool import capture_retrieval_for_session
 
 from ..diagnosis_models import (
     ClaimProvenance,
@@ -199,10 +200,13 @@ async def run_investigation(
         prompt=system_prompt,
     )
     messages = [("user", _user_prompt(directive, context, hypotheses or []))]
-    agent_result = await agent.ainvoke(
-        {"messages": messages},
-        config={"recursion_limit": directive.max_iterations * 2 + 6},
-    )
+    # 知识检索 trace 以 directive_id 为键：Send 并行取证共享 thread_id，
+    # 直接用会话 ID 会导致并行分支互相覆盖检索记录。
+    with capture_retrieval_for_session(f"aiops-investigation:{directive.id}"):
+        agent_result = await agent.ainvoke(
+            {"messages": messages},
+            config={"recursion_limit": directive.max_iterations * 2 + 6},
+        )
     records = extract_tool_call_records(agent_result["messages"])
     if not records:
         raise RuntimeError(f"取证指令 {directive.id} 未产生任何工具调用")

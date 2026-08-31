@@ -1,8 +1,12 @@
 """
-通用 Plan-Execute-Replan 服务
-基于 LangGraph 官方教程实现
+AIOps 诊断服务：双引擎（legacy plan-execute-replan / multiagent 星型编排）
+
+multiagent 引擎为默认路径：supervisor 中心化确定性路由 + 假设驱动鉴别诊断。
+legacy 引擎保留用于 P5 A/B 场景基准对照，达标后由 P6 收尾移除。
 """
 
+import os
+import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -11,27 +15,52 @@ from langgraph.graph import END, StateGraph
 from loguru import logger
 
 from app.agent.aiops import PlanExecuteState, executor, planner, replanner
+from app.agent.aiops.diagnosis_models import BudgetLedger, SupervisorDecision
 from app.agent.aiops.models import DiagnosisContext, DiagnosticPlan, StepExecutionResult
+from app.agent.aiops.orchestrator.graph import (
+    NODE_ADJUDICATOR,
+    NODE_HYPOTHESIZER,
+    NODE_INVESTIGATE,
+    NODE_REPORTER,
+    NODE_SUPERVISOR,
+    build_orchestrator_graph,
+)
+from app.agent.aiops.orchestrator.state import OrchestratorState
 from app.config import config
+from app.services.evidence_repository import evidence_repository
 
-# 节点名称常量
+# legacy 引擎节点名称常量
 NODE_PLANNER = "planner"
 NODE_EXECUTOR = "executor"
 NODE_REPLANNER = "replanner"
 
 
+def _scenario_id() -> str:
+    try:
+        from mcp_servers.scenario_loader import get_active_scenario_name
+
+        return get_active_scenario_name()
+    except ImportError:
+        return os.environ.get("MOCK_SCENARIO", "no-fault")
+
+
 class AIOpsService:
-    """通用 Plan-Execute-Replan 服务"""
+    """AIOps 诊断服务（双引擎）"""
 
     def __init__(self):
         """初始化服务"""
         self.checkpointer = MemorySaver()
         self.graph = self._build_graph()
-        logger.info("Plan-Execute-Replan Service 初始化完成")
+        self.multiagent_graph = build_orchestrator_graph(
+            checkpointer=MemorySaver()
+        )
+        logger.info(
+            f"AIOps Service 初始化完成，当前引擎: {config.aiops_engine}"
+        )
 
     def _build_graph(self):
-        """构建 Plan-Execute-Replan 工作流"""
-        logger.info("构建工作流图...")
+        """构建 legacy Plan-Execute-Replan 工作流（P5 A/B 对照用）"""
+        logger.info("构建 legacy 工作流图...")
 
         # 创建状态图
         workflow = StateGraph(PlanExecuteState)
@@ -76,7 +105,7 @@ class AIOpsService:
         # 编译工作流
         compiled_graph = workflow.compile(checkpointer=self.checkpointer)
 
-        logger.info("工作流图构建完成")
+        logger.info("legacy 工作流图构建完成")
         return compiled_graph
 
     async def execute(
@@ -86,7 +115,7 @@ class AIOpsService:
         service_name: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
-        执行 Plan-Execute-Replan 流程
+        执行诊断流程（按配置的引擎分发）
 
         Args:
             user_input: 用户的任务描述
@@ -96,6 +125,226 @@ class AIOpsService:
         Yields:
             Dict[str, Any]: 流式事件
         """
+        if config.aiops_engine == "multiagent":
+            async for event in self._execute_multiagent(
+                user_input, session_id=session_id, service_name=service_name
+            ):
+                yield event
+        else:
+            async for event in self._execute_legacy(
+                user_input, session_id=session_id, service_name=service_name
+            ):
+                yield event
+
+    async def _execute_multiagent(
+        self,
+        user_input: str,
+        session_id: str = "default",
+        service_name: str | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """星型多 Agent 编排：supervisor 中心化路由"""
+        logger.info(f"[会话 {session_id}] 开始多 Agent 诊断: {user_input}")
+
+        diagnosis_context = DiagnosisContext(
+            service_name=service_name or config.aiops_default_service_name
+        )
+        budget = BudgetLedger(
+            max_rounds=config.aiops_max_rounds,
+            max_invocations=config.aiops_max_invocations,
+            max_wall_seconds=config.aiops_max_wall_seconds,
+        )
+        initial_state: OrchestratorState = {
+            "input": user_input,
+            "session_id": session_id,
+            "context": diagnosis_context,
+            "hypotheses": [],
+            "directives": [],
+            "dispatched": [],
+            "evidence": [],
+            "investigation_errors": [],
+            "adjudications": [],
+            "pending_decision": None,
+            "decision": SupervisorDecision(action="hypothesize", reason="初始状态"),
+            "adjudicated_evidence_count": 0,
+            "converged_hypothesis_id": None,
+            "report_violations": [],
+            "response": "",
+            "budget": budget,
+        }
+
+        self._start_session(session_id, diagnosis_context, budget)
+
+        try:
+            # MemorySaver 全局共享，thread_id 加请求级后缀避免并发串话
+            thread_id = f"{session_id}:{uuid.uuid4().hex[:8]}"
+            config_dict = {"configurable": {"thread_id": thread_id}}
+
+            report_streamed = False
+            final_response = ""
+            async for stream_mode, event in self.multiagent_graph.astream(
+                input=initial_state,
+                config=config_dict,
+                stream_mode=["updates", "custom"],
+            ):
+                if stream_mode == "custom":
+                    if isinstance(event, dict) and event.get("type") == "report_chunk":
+                        report_streamed = True
+                        yield event
+                    continue
+
+                for node_name, node_output in event.items():
+                    for sse_event in self._format_multiagent_event(
+                        node_name, node_output
+                    ):
+                        if sse_event.get("type") == "report":
+                            final_response = sse_event.get("report", "")
+                            # chunk 已把完整报告发给客户端时跳过重复 report 事件，
+                            # 最终文本由 complete 事件携带（与 legacy 语义一致）
+                            if report_streamed:
+                                continue
+                        yield sse_event
+
+            yield {
+                "type": "complete",
+                "stage": "complete",
+                "message": "任务执行完成",
+                "response": final_response,
+            }
+            logger.info(f"[会话 {session_id}] 多 Agent 诊断完成")
+        except Exception as e:
+            logger.exception(f"[会话 {session_id}] 多 Agent 诊断失败: {e}")
+            yield {
+                "type": "error",
+                "stage": "error",
+                "message": f"智能运维诊断出错: {str(e)}",
+            }
+        finally:
+            self._finish_session(session_id)
+
+    def _start_session(
+        self,
+        session_id: str,
+        context: DiagnosisContext,
+        budget: BudgetLedger,
+    ) -> None:
+        try:
+            evidence_repository.start_session(
+                session_id,
+                context.service_name,
+                _scenario_id(),
+                budget.model_dump(mode="json"),
+            )
+        except Exception as exc:
+            logger.warning(f"诊断会话 {session_id} 登记失败（Evidence Store 旁路）: {exc}")
+
+    def _finish_session(self, session_id: str) -> None:
+        try:
+            evidence_repository.finish_session(
+                session_id, status="completed"
+            )
+        except Exception as exc:
+            logger.warning(f"诊断会话 {session_id} 收尾失败（Evidence Store 旁路）: {exc}")
+
+    def _format_multiagent_event(
+        self, node_name: str, output: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
+        """节点更新 → SSE 事件（契约映射见方案 P4 表格）"""
+        if not isinstance(output, dict):
+            return []
+
+        if node_name == NODE_SUPERVISOR:
+            decision: SupervisorDecision = output["decision"]
+            budget = output.get("budget")
+            round_number = budget.round if isinstance(budget, BudgetLedger) else "?"
+            return [
+                {
+                    "type": "status",
+                    "stage": "supervisor",
+                    "message": f"第 {round_number} 轮：{decision.reason}",
+                }
+            ]
+
+        if node_name == NODE_HYPOTHESIZER:
+            hypotheses = output.get("hypotheses", [])
+            if not hypotheses:
+                errors = output.get("investigation_errors", [])
+                message = "候选假设生成失败"
+                if errors:
+                    message += f": {errors[-1]}"
+                return [{"type": "status", "stage": "hypothesizer", "message": message}]
+            return [
+                {
+                    "type": "plan",
+                    "stage": "hypotheses_created",
+                    "message": f"已生成 {len(hypotheses)} 个候选假设，开始鉴别取证",
+                    "plan": {
+                        "hypotheses": [
+                            h.model_dump(mode="json")
+                            if hasattr(h, "model_dump")
+                            else h
+                            for h in hypotheses
+                        ]
+                    },
+                }
+            ]
+
+        if node_name == NODE_INVESTIGATE:
+            events: list[dict[str, Any]] = []
+            for card in output.get("evidence", []):
+                card_data = card.model_dump(mode="json") if hasattr(card, "model_dump") else card
+                domain = card_data.get("domain", "")
+                directive_id = card_data.get("directive_id", "")
+                claim_count = len(card_data.get("claims", []))
+                events.append(
+                    {
+                        "type": "step_complete",
+                        "stage": "investigated",
+                        "message": f"取证完成：{directive_id}（{domain}，{claim_count} 条证据）",
+                        "current_step": directive_id,
+                        "result": card_data,
+                    }
+                )
+            for error in output.get("investigation_errors", []):
+                events.append(
+                    {
+                        "type": "status",
+                        "stage": "investigate_failed",
+                        "message": f"取证任务失败：{error}",
+                    }
+                )
+            return events
+
+        if node_name == NODE_ADJUDICATOR:
+            decision = output.get("pending_decision")
+            if decision is None:
+                return [{"type": "status", "stage": "adjudicator", "message": "评审完成"}]
+            eliminations = len(decision.eliminations)
+            new_directives = len(decision.new_directives)
+            message = f"评审完成：淘汰 {eliminations} 个假设，新增 {new_directives} 个取证任务"
+            if decision.converged:
+                message = f"评审收敛：假设 {decision.converged_hypothesis_id} 获得支持"
+            return [{"type": "status", "stage": "adjudicator", "message": message}]
+
+        if node_name == NODE_REPORTER:
+            response = output.get("response", "")
+            return [
+                {
+                    "type": "report",
+                    "stage": "final_report",
+                    "message": "最终报告已生成",
+                    "report": response,
+                }
+            ]
+
+        return []
+
+    async def _execute_legacy(
+        self,
+        user_input: str,
+        session_id: str = "default",
+        service_name: str | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """legacy Plan-Execute-Replan 流程"""
         logger.info(f"[会话 {session_id}] 开始执行任务: {user_input}")
 
         try:

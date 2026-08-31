@@ -107,7 +107,7 @@ class AdjudicationDecision(BaseModel):
 class SupervisorDecision(BaseModel):
     """确定性路由的中间产物（不调 LLM，仅用于事件与测试断言）。"""
 
-    action: Literal["dispatch", "adjudicate", "converge"]
+    action: Literal["hypothesize", "dispatch", "adjudicate", "converge"]
     directives: list[Directive] = Field(default_factory=list)
     converged_hypothesis_id: str | None = None
     reason: str = ""
