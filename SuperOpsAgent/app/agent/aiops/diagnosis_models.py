@@ -123,6 +123,7 @@ class BudgetLedger(BaseModel):
     started_at: datetime = Field(default_factory=datetime.now)
     max_wall_seconds: float = Field(default=240.0, gt=0)
     min_dispatch_wall_seconds: float = Field(default=90.0, gt=0)
+    investigation_wall_seconds: float = Field(default=120.0, gt=0)
 
     def remaining_rounds(self) -> int:
         return self.max_rounds - self.round

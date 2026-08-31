@@ -35,6 +35,8 @@ async def investigate(task: InvestigateTask) -> dict[str, Any]:
     budget = BudgetLedger.model_validate(task["budget"])
     logger.info(f"=== Investigate：{directive.id}（{directive.target_domain}）===")
     try:
+        # 独立任务上限：Send 并行分支必须全部返回 supervisor 才能继续，
+        # 单域卡住时用该上限兜底，避免拖死全局墙钟导致已完成证据无法评审。
         remaining = budget.max_wall_seconds - budget.elapsed_seconds()
         card: EvidenceCard = await asyncio.wait_for(
             run_domain_investigation(
@@ -44,11 +46,10 @@ async def investigate(task: InvestigateTask) -> dict[str, Any]:
                 hypotheses=task["hypotheses"],
                 round_number=task["round"],
             ),
-            timeout=max(5.0, remaining),
+            timeout=max(5.0, min(budget.investigation_wall_seconds, remaining)),
         )
     except asyncio.TimeoutError:
-        remaining = max(0.0, budget.max_wall_seconds - budget.elapsed_seconds())
-        message = f"{directive.id}: 取证超时（墙钟剩余 {remaining:.0f}s，未能完成取证子图）"
+        message = f"{directive.id}: 取证超时（任务上限 {budget.investigation_wall_seconds:.0f}s）"
         logger.error(f"取证任务 {message}")
         return {
             "dispatched": [directive.id],

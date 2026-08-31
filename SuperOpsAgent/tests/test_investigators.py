@@ -257,18 +257,35 @@ async def test_run_investigation_retries_after_draft_validation_error(monkeypatc
     )
     patch_run_environment(monkeypatch, agent=agent, chain=chain)
 
-    with pytest.raises(ValueError, match="证据草稿校验失败"):
-        await base_module.run_investigation(
-            make_directive("metrics"),
-            DiagnosisContext(service_name="data-sync-service"),
-            domain="metrics",
-            system_prompt="prompt",
-        )
+    card = await base_module.run_investigation(
+        make_directive("metrics"),
+        DiagnosisContext(service_name="data-sync-service"),
+        domain="metrics",
+        system_prompt="prompt",
+    )
 
     assert len(chain.calls) == 2
     correction = chain.calls[1][-1][1]
     assert "call_index 只能取 0 到 0" in correction
-    assert "hypothesis_ids 只能使用任务指令中列出的假设" in correction
+    # 未知假设 ID 被清洗剔除，已知 ID 保留，证据卡不再作废
+    assert card.claims[0].hypothesis_ids == ["hyp-gc"]
+
+
+@pytest.mark.asyncio
+async def test_run_investigation_strips_invented_hypothesis_ids(monkeypatch) -> None:
+    """模型编造候选列表之外的假设 ID 时剔除 ID 保留证据卡。"""
+    agent = FakeAgent(make_agent_messages())
+    chain = FakeStructuredChain([make_draft(call_index=0, hypothesis_ids=["hyp_memory_pressure"])])
+    patch_run_environment(monkeypatch, agent=agent, chain=chain)
+
+    card = await base_module.run_investigation(
+        make_directive("metrics", hypothesis_ids=[]),
+        DiagnosisContext(service_name="data-sync-service"),
+        domain="metrics",
+        system_prompt="prompt",
+    )
+
+    assert card.claims[0].hypothesis_ids == []
 
 
 @pytest.mark.asyncio

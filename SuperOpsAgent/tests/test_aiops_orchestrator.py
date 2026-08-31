@@ -210,6 +210,37 @@ def test_supervisor_converges_when_hypothesizer_failed() -> None:
     assert "假设生成失败" in update["decision"].reason
 
 
+@pytest.mark.asyncio
+async def test_investigate_times_out_on_task_wall_limit(monkeypatch) -> None:
+    """单域卡住时独立任务上限生效，不再拖到全局墙钟尽头。"""
+    import asyncio as _asyncio
+
+    from app.agent.aiops.orchestrator.graph import investigate
+
+    async def _hang(*_args, **_kwargs):
+        await _asyncio.sleep(5)
+
+    monkeypatch.setattr(graph_module, "run_domain_investigation", _hang)
+    directive = Directive(
+        id="d1-metrics",
+        target_domain="metrics",
+        objective="验证 GC 压力假设",
+        hypothesis_ids=["hyp-gc"],
+    )
+    budget = BudgetLedger(investigation_wall_seconds=0.5)
+    task = {
+        "directive": directive.model_dump(mode="json"),
+        "hypotheses": [],
+        "round": 2,
+        "session_id": "s1",
+        "context": DiagnosisContext(service_name="data-sync-service"),
+        "budget": budget.model_dump(mode="json"),
+    }
+    result = await investigate(task)
+    assert result["investigation_errors"][0].startswith("d1-metrics: 取证超时")
+    assert "任务上限" in result["investigation_errors"][0]
+
+
 def test_supervisor_converges_when_all_hypotheses_ruled_out() -> None:
     ruled_out = make_hypothesis().model_copy(update={"status": "ruled_out"})
     state = make_state(hypotheses=[ruled_out])

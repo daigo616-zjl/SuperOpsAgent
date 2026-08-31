@@ -134,9 +134,9 @@ def _validate_draft(
     draft: EvidenceDraft,
     record_count: int,
     directive: Directive,
-    allowed_hypothesis_ids: set[str],
 ) -> str | None:
-    """返回校验错误描述，None 表示通过。"""
+    """返回校验错误描述，None 表示通过。只校验机械完整性：
+    call_index 指向真实调用、excerpt 非空。假设 ID 归属由清洗兜底。"""
     if not draft.claims:
         return "claims 不能为空"
     for index, claim in enumerate(draft.claims):
@@ -144,9 +144,6 @@ def _validate_draft(
             return f"claims[{index}].call_index={claim.call_index} 超出实际工具调用数 {record_count}"
         if not claim.excerpt.strip():
             return f"claims[{index}].excerpt 不能为空"
-        unknown = set(claim.hypothesis_ids) - allowed_hypothesis_ids
-        if unknown:
-            return f"claims[{index}].hypothesis_ids 引用了未知的假设: {sorted(unknown)}"
     return None
 
 
@@ -234,17 +231,12 @@ async def run_investigation(
     ]
     # 与 Planner 相同的一次校验重试：结构化输出偶发引用越界时把
     # 明确错误反馈给模型重新声明，避免可修正错误终止整轮诊断。
-    # 允许引用 directive 圈定的假设加上全局候选假设：prompt 中列出了全部
-    # 候选假设，模型引用 directive 子集之外的假设不应导致整卡作废。
-    allowed_hypothesis_ids = set(directive.hypothesis_ids) | {
-        item.get("id") for item in hypotheses or [] if item.get("id")
-    }
     draft: EvidenceDraft | None = None
     last_error: str | None = None
     for attempt in range(2):
         raw = await draft_chain.ainvoke(draft_messages)
         candidate = raw if isinstance(raw, EvidenceDraft) else EvidenceDraft.model_validate(raw)
-        last_error = _validate_draft(candidate, len(records), directive, allowed_hypothesis_ids)
+        last_error = _validate_draft(candidate, len(records), directive)
         if last_error is None:
             draft = candidate
             break
@@ -253,12 +245,30 @@ async def run_investigation(
             (
                 "user",
                 f"上一次草稿未通过校验：{last_error}\n"
-                f"call_index 只能取 0 到 {len(records) - 1}，"
-                "hypothesis_ids 只能使用任务指令中列出的假设，请完整重新输出。",
+                f"call_index 只能取 0 到 {len(records) - 1}，请完整重新输出。",
             )
         )
     if draft is None:
         raise ValueError(f"证据草稿校验失败: {last_error}")
+
+    # 假设 ID 归属清洗：模型可能编造候选列表之外的 ID（重试也纠正不了），
+    # 剔除未知 ID 保留证据卡，而不是把整卡作废——归属缺失可由评审兜底，
+    # 取证产出的丢失不可恢复。
+    allowed_hypothesis_ids = set(directive.hypothesis_ids) | {
+        item.get("id") for item in hypotheses or [] if item.get("id")
+    }
+    for offset, claim in enumerate(draft.claims):
+        unknown = [i for i in claim.hypothesis_ids if i not in allowed_hypothesis_ids]
+        if unknown:
+            logger.warning(
+                "草稿 claims[{}] 引用了未知假设 {}，已剔除: {}",
+                offset,
+                unknown,
+                sorted(allowed_hypothesis_ids),
+            )
+            draft.claims[offset].hypothesis_ids = [
+                i for i in claim.hypothesis_ids if i in allowed_hypothesis_ids
+            ]
 
     card = _build_evidence_card(draft, records, directive, domain, round_number)
     logger.info(

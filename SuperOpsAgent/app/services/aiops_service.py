@@ -153,6 +153,7 @@ class AIOpsService:
             max_invocations=config.aiops_max_invocations,
             max_wall_seconds=config.aiops_max_wall_seconds,
             min_dispatch_wall_seconds=config.aiops_min_dispatch_wall_seconds,
+            investigation_wall_seconds=config.aiops_investigation_wall_seconds,
         )
         initial_state: OrchestratorState = {
             "input": user_input,
