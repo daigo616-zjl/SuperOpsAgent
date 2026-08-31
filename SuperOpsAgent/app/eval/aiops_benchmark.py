@@ -226,18 +226,45 @@ class McpServerManager:
         self.ready_timeout = ready_timeout
         self.processes: list[asyncio.subprocess.Process] = []
 
-    async def _assert_ports_free(self) -> None:
-        for port in (MCP_CLS_PORT, MCP_MONITOR_PORT):
-            try:
-                reader, writer = await asyncio.open_connection("127.0.0.1", port)
-                writer.close()
-                await writer.wait_closed()
-            except OSError:
-                continue
-            raise RuntimeError(
-                f"端口 {port} 已被占用（可能已有 MCP 服务在跑）。"
-                "请先停掉 start-windows.bat 启动的服务再运行基准。"
-            )
+    async def _assert_ports_free(self, grace_seconds: float = 60.0) -> None:
+        """端口被占时先等 grace_seconds（可能是上一个服务正在关闭或瞬时占用），
+        超时后报错并指出占用者 PID。"""
+        deadline = time.monotonic() + grace_seconds
+        while True:
+            occupier = None
+            for port in (MCP_CLS_PORT, MCP_MONITOR_PORT):
+                try:
+                    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                    writer.close()
+                    await writer.wait_closed()
+                    occupier = port
+                    break
+                except OSError:
+                    continue
+            if occupier is None:
+                return
+            if time.monotonic() >= deadline:
+                pid = self._find_port_pid(occupier)
+                raise RuntimeError(
+                    f"端口 {occupier} 被进程 {pid or '未知'} 占用。"
+                    "请先停掉 start-windows.bat 启动的 MCP 服务，或结束占用进程后重跑。"
+                )
+            print(f"    端口 {occupier} 暂被占用，{grace_seconds:.0f}s 内重试...")
+            await asyncio.sleep(5)
+
+    @staticmethod
+    def _find_port_pid(port: int) -> int | None:
+        try:
+            output = subprocess.run(
+                ["powershell", "-Command",
+                 f"(Get-NetTCPConnection -LocalPort {port} -State Listen "
+                 f"-ErrorAction SilentlyContinue).OwningProcess"],
+                capture_output=True, text=True, timeout=15,
+                encoding="utf-8", errors="replace",
+            ).stdout.strip()
+            return int(output.splitlines()[0]) if output else None
+        except (ValueError, subprocess.SubprocessError):
+            return None
 
     async def start(self, scenario_id: str) -> None:
         await self._assert_ports_free()
@@ -296,6 +323,18 @@ class McpServerManager:
                 process.kill()
                 await process.wait()
         self.processes = []
+        # 确认端口真正释放后再返回，避免下一个剧本的端口检查误判
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            try:
+                reader, writer = await asyncio.open_connection(
+                    "127.0.0.1", MCP_CLS_PORT
+                )
+                writer.close()
+                await writer.wait_closed()
+            except OSError:
+                return
+            await asyncio.sleep(1)
 
 
 async def run_diagnosis(engine: str, scenario: dict[str, Any], session_id: str) -> list[dict[str, Any]]:
@@ -466,11 +505,11 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     manager = McpServerManager(output_dir)
 
     runs: list[dict[str, Any]] = []
-    try:
-        for scenario_id in scenario_ids:
-            scenario = scenarios[scenario_id]
-            print(f"=== 剧本 {scenario_id}: 启动 mock MCP 服务 ===")
-            await manager.start(scenario_id)
+    for scenario_id in scenario_ids:
+        scenario = scenarios[scenario_id]
+        print(f"=== 剧本 {scenario_id}: 启动 mock MCP 服务 ===")
+        await manager.start(scenario_id)
+        try:
             for engine in engines:
                 for run_index in range(args.runs):
                     print(f"--- {scenario_id} / {engine} / 第 {run_index + 1} 次 ---")
@@ -482,8 +521,9 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                         f"hit={hit} error={run['error']}"
                     )
                     runs.append(run)
-    finally:
-        await manager.stop()
+        finally:
+            # 每个剧本跑完必须停服务换剧本，否则下一个剧本会用到上一个的 mock 数据
+            await manager.stop()
 
     aggregated = aggregate(runs)
     gate = compute_gate(runs)
