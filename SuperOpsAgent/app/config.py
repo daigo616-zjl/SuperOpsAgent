@@ -137,12 +137,15 @@ class Settings(BaseSettings):
     aiops_engine: str = "multiagent"  # legacy | multiagent
     aiops_max_rounds: int = Field(default=6, ge=1)
     aiops_max_invocations: int = Field(default=60, ge=1)
-    aiops_max_wall_seconds: float = Field(default=240.0, gt=0)
+    # 墙钟需覆盖：首轮 60s 调用超时×重试的挂死 spell（实测 60+60+60=180s）
+    # 加一轮正常取证与评审；过低会让 Provider 延迟尖峰期直接零证据收敛
+    aiops_max_wall_seconds: float = Field(default=300.0, gt=0)
     # 剩余墙钟低于该值时不再派发新取证任务（一次取证 + 草稿生成约需 60-120s）
     aiops_min_dispatch_wall_seconds: float = Field(default=90.0, gt=0)
     # 单个取证任务的墙钟上限：LangGraph Send 分支需全部返回才交还
-    # supervisor，某个域卡住时该上限保证其余域的证据仍能进入评审
-    aiops_investigation_wall_seconds: float = Field(default=120.0, gt=0)
+    # supervisor，某个域卡住时该上限保证其余域的证据仍能进入评审；
+    # 需容纳单次 60s 超时 + 2 次重试的完整 spell
+    aiops_investigation_wall_seconds: float = Field(default=150.0, gt=0)
     # 取证 LLM 单次调用超时：正常调用几秒内返回，但非流式调用偶发挂死
     # （实测 >85s 静默）。该超时要小于单任务上限，挂死后 resilient 重试
     # 才来得及在任务预算内完成；120s 会让一次挂死吞掉整个任务
