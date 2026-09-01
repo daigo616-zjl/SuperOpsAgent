@@ -277,7 +277,7 @@ def test_hypothesizer_invalid_output_degrades() -> None:
 
 
 async def _run_hypothesizer(llm: FakeLlm) -> dict[str, Any]:
-    from app.agent.aiops.models import DiagnosisContext
+    from app.agent.aiops.diagnosis_models import DiagnosisContext
 
     state = {"input": "诊断", "context": DiagnosisContext(service_name="svc")}
     original = hypothesizer_module.LLMFactory

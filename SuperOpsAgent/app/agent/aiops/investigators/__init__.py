@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..diagnosis_models import Directive, EvidenceCard
-from ..models import DiagnosisContext
+from ..diagnosis_models import DiagnosisContext
 
 _DOMAIN_MODULES = {"metrics": "metrics", "logs": "logs", "knowledge": "knowledge"}
 

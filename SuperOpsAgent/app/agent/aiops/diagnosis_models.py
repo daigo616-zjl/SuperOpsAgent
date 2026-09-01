@@ -16,6 +16,12 @@ EvidenceDomain = Literal["metrics", "logs", "knowledge"]
 EvidencePolarity = Literal["supports", "refutes", "neutral"]
 
 
+class DiagnosisContext(BaseModel):
+    """贯穿诊断流程且由服务层统一解析的上下文。"""
+
+    service_name: str = Field(min_length=1, description="本次诊断的目标服务")
+
+
 class Hypothesis(BaseModel):
     """候选根因假设，带鉴别性预期证据。"""
 

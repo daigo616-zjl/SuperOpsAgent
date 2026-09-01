@@ -15,7 +15,7 @@ from app.agent.aiops.investigators.base import (
     ToolCallRecord,
     extract_tool_call_records,
 )
-from app.agent.aiops.models import DiagnosisContext
+from app.agent.aiops.diagnosis_models import DiagnosisContext
 from app.agent.aiops.tool_registry import ToolDescriptor, ToolRegistry
 from app.agent.aiops.tool_runtime import args_digest
 from app.config import config

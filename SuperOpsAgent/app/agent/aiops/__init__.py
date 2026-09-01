@@ -1,21 +1,6 @@
-"""
-通用 Plan-Execute-Replan 框架
-基于 LangGraph 官方教程实现
-"""
+"""AIOps 星型多 Agent 编排。
 
-from .executor import executor
-from .models import DiagnosisContext, DiagnosticPlan, DiagnosticStep, StepExecutionResult
-from .planner import planner
-from .replanner import replanner
-from .state import PlanExecuteState
-
-__all__ = [
-    "PlanExecuteState",
-    "planner",
-    "executor",
-    "replanner",
-    "DiagnosisContext",
-    "DiagnosticPlan",
-    "DiagnosticStep",
-    "StepExecutionResult",
-]
+中心化 Supervisor 确定性路由：hypothesize → Send 并行取证
+（metrics/logs/knowledge）→ adjudicate → converge → reporter。
+Agent 间零直连，一切消息经 Supervisor 中转。
+"""

@@ -10,13 +10,35 @@ from langgraph.config import get_stream_writer
 from loguru import logger
 
 from app.agent.aiops.diagnosis_models import EvidenceCard, Hypothesis
-from app.agent.aiops.replanner import _chunk_text
 from app.config import config
 from app.core.llm_factory import LLMFactory
 
 from .state import OrchestratorState
 
 CLAIM_REF_PATTERN = re.compile(r"\[ev-[a-zA-Z0-9_-]+\]")
+
+
+def _chunk_text(chunk: Any) -> str:
+    """Extract user-visible text from a LangChain message chunk."""
+    content_blocks = getattr(chunk, "content_blocks", None)
+    if isinstance(content_blocks, list):
+        return "".join(
+            block.get("text", "")
+            for block in content_blocks
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+
+    content = getattr(chunk, "content", chunk)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
 
 reporter_prompt = ChatPromptTemplate.from_messages(
     [

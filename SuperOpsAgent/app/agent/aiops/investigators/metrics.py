@@ -3,7 +3,7 @@
 from textwrap import dedent
 
 from ..diagnosis_models import Directive
-from ..models import DiagnosisContext
+from ..diagnosis_models import DiagnosisContext
 from .base import run_investigation
 
 metrics_system_prompt = dedent("""

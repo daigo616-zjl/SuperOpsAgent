@@ -134,7 +134,6 @@ class Settings(BaseSettings):
     aiops_investigator_model: str | None = None  # 默认回退到 rag_model
 
     # AIOps 多 Agent 编排预算与角色模型
-    aiops_engine: str = "multiagent"  # legacy | multiagent
     aiops_max_rounds: int = Field(default=6, ge=1)
     aiops_max_invocations: int = Field(default=60, ge=1)
     # 墙钟需覆盖：首轮 60s 调用超时×重试的挂死 spell（实测 60+60+60=180s）

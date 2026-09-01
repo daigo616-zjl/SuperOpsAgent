@@ -1,9 +1,8 @@
-"""AIOps 双引擎 A/B 场景基准（P5）。
+"""AIOps 场景基准。
 
-按剧本（MOCK_SCENARIO）起 mock MCP 服务，legacy 与 multiagent 引擎各跑 N 次，
+按剧本（MOCK_SCENARIO）起 mock MCP 服务，每剧本跑 N 次诊断，
 用 EVAL_MODEL 评判根因命中率与幻觉率，落盘 eval/reports/aiops/。
-
-验收门槛（方案 P5）：命中率 新 ≥ 旧；幻觉率 新 < 旧。
+（P5 阶段为 legacy/multiagent 双引擎 A/B 对比，legacy 于 P6 删除。）
 """
 
 from __future__ import annotations
@@ -337,16 +336,14 @@ class McpServerManager:
             await asyncio.sleep(1)
 
 
-async def run_diagnosis(engine: str, scenario: dict[str, Any], session_id: str) -> list[dict[str, Any]]:
+async def run_diagnosis(scenario: dict[str, Any], session_id: str) -> list[dict[str, Any]]:
     from app.services.aiops_service import aiops_service
 
-    config.aiops_engine = engine
     user_input = f"诊断 {scenario['service_name']} 告警并给出根因分析"
     return [event async for event in aiops_service.execute(user_input, session_id=session_id)]
 
 
 async def execute_run(
-    engine: str,
     scenario_id: str,
     scenario: dict[str, Any],
     run_index: int,
@@ -354,16 +351,15 @@ async def execute_run(
 ) -> dict[str, Any]:
     from app.services import aiops_service as aiops_service_module
 
-    session_id = f"ab-{scenario_id}-{engine}-{run_index}-{datetime.now(UTC).strftime('%H%M%S')}"
+    session_id = f"ab-{scenario_id}-{run_index}-{datetime.now(UTC).strftime('%H%M%S')}"
     _LL_CALL_COUNT["count"] = 0
     started = time.perf_counter()
-    events = await run_diagnosis(engine, scenario, session_id)
+    events = await run_diagnosis(scenario, session_id)
     wall_seconds = time.perf_counter() - started
 
     summary = summarize_run(events)
     result: dict[str, Any] = {
         "scenario": scenario_id,
-        "engine": engine,
         "run": run_index,
         "session_id": session_id,
         "wall_seconds": round(wall_seconds, 1),
@@ -438,15 +434,14 @@ def _mean(values: list[float]) -> float | None:
 
 
 def aggregate(runs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for run in runs:
-        groups[(run["scenario"], run["engine"])].append(run)
+        groups[run["scenario"]].append(run)
 
     aggregated: dict[str, dict[str, Any]] = {}
-    for (scenario, engine), group in sorted(groups.items()):
-        aggregated[f"{scenario}/{engine}"] = {
+    for scenario, group in sorted(groups.items()):
+        aggregated[scenario] = {
             "scenario": scenario,
-            "engine": engine,
             "runs": len(group),
             "hit_rate": _mean(
                 [1.0 for r in group if judge_hit(r) is True]
@@ -466,37 +461,9 @@ def aggregate(runs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return aggregated
 
 
-def compute_gate(runs: list[dict[str, Any]]) -> dict[str, Any]:
-    def engine_values(engine: str) -> tuple[float | None, float | None]:
-        subset = [r for r in runs if r["engine"] == engine]
-        hits = [1.0 if judge_hit(r) else 0.0 for r in subset if judge_hit(r) is not None]
-        halls = [
-            rate for r in subset if (rate := judge_hallucination_rate(r)) is not None
-        ]
-        return _mean(hits), _mean(halls)
-
-    old_hit, old_hall = engine_values("legacy")
-    new_hit, new_hall = engine_values("multiagent")
-
-    comparable_hit = old_hit is not None and new_hit is not None
-    comparable_hall = old_hall is not None and new_hall is not None
-    hit_ok = comparable_hit and new_hit >= old_hit
-    hallucination_ok = comparable_hall and new_hall < old_hall
-    return {
-        "passed": bool(hit_ok and hallucination_ok),
-        "hit_rate": {"legacy": old_hit, "multiagent": new_hit, "passed": hit_ok},
-        "hallucination_rate": {
-            "legacy": old_hall,
-            "multiagent": new_hall,
-            "passed": hallucination_ok,
-        },
-    }
-
-
 async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     scenario_ids = args.scenarios or list_scenario_ids()
     scenarios = load_scenarios(scenario_ids)
-    engines = [e.strip() for e in args.engines.split(",")]
     output_dir = Path(config.eval_output_dir) / "aiops"
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -510,38 +477,34 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         print(f"=== 剧本 {scenario_id}: 启动 mock MCP 服务 ===")
         await manager.start(scenario_id)
         try:
-            for engine in engines:
-                for run_index in range(args.runs):
-                    print(f"--- {scenario_id} / {engine} / 第 {run_index + 1} 次 ---")
-                    run = await execute_run(engine, scenario_id, scenario, run_index, judge)
-                    hit = judge_hit(run)
-                    print(
-                        f"    wall={run['wall_seconds']}s llm={run['llm_calls']} "
-                        f"rounds={run['rounds']} steps={run['step_count']} "
-                        f"hit={hit} error={run['error']}"
-                    )
-                    runs.append(run)
+            for run_index in range(args.runs):
+                print(f"--- {scenario_id} / 第 {run_index + 1} 次 ---")
+                run = await execute_run(scenario_id, scenario, run_index, judge)
+                hit = judge_hit(run)
+                print(
+                    f"    wall={run['wall_seconds']}s llm={run['llm_calls']} "
+                    f"rounds={run['rounds']} steps={run['step_count']} "
+                    f"hit={hit} error={run['error']}"
+                )
+                runs.append(run)
         finally:
             # 每个剧本跑完必须停服务换剧本，否则下一个剧本会用到上一个的 mock 数据
             await manager.stop()
 
     aggregated = aggregate(runs)
-    gate = compute_gate(runs)
     report = {
         "generated_at": datetime.now(UTC).isoformat(),
         "judge_model": None if judge is None else judge.model,
         "scenarios": scenario_ids,
-        "engines": engines,
-        "runs_per_engine": args.runs,
+        "runs_per_scenario": args.runs,
         "aggregate": aggregated,
-        "gate": gate,
         "runs": [
             {k: v for k, v in run.items() if k not in ("report", "detail_path")}
             for run in runs
         ],
     }
     report_path = output_dir / (
-        f"{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}-aiops-ab.json"
+        f"{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}-aiops-benchmark.json"
     )
     report_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2, default=str),
@@ -552,36 +515,29 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def print_summary(report: dict[str, Any]) -> None:
-    print("\n===== A/B 汇总 =====")
+    print("\n===== 基准汇总 =====")
     for key, agg in report["aggregate"].items():
         print(
             f"{key}: hit={agg['hit_rate']} hallucination={agg['hallucination_rate']} "
             f"wall={agg['avg_wall_seconds']}s llm={agg['avg_llm_calls']} "
             f"rounds={agg['avg_rounds']}"
         )
-    gate = report["gate"]
-    print(f"\n命中率门槛 (新≥旧): {gate['hit_rate']}")
-    print(f"幻觉率门槛 (新<旧): {gate['hallucination_rate']}")
-    print(f"门禁判定: {'PASS' if gate['passed'] else 'FAIL'}")
     print(f"报告: {report.get('report_path')}")
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="AIOps 双引擎 A/B 场景基准")
+    parser = argparse.ArgumentParser(description="AIOps 场景基准")
     parser.add_argument(
         "--scenarios", default="", help="逗号分隔剧本名，默认全部 5 个"
     )
-    parser.add_argument(
-        "--engines", default="legacy,multiagent", help="逗号分隔引擎名"
-    )
-    parser.add_argument("--runs", type=int, default=3, help="每引擎每剧本运行次数")
+    parser.add_argument("--runs", type=int, default=3, help="每剧本运行次数")
     parser.add_argument("--no-judge", action="store_true", help="跳过 LLM 判分")
     args = parser.parse_args(argv)
     args.scenarios = [s.strip() for s in args.scenarios.split(",") if s.strip()]
 
     report = asyncio.run(run_benchmark(args))
     print_summary(report)
-    return 0 if report["gate"]["passed"] else 1
+    return 0
 
 
 if __name__ == "__main__":

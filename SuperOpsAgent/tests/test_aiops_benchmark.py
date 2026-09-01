@@ -1,9 +1,8 @@
-"""AIOps A/B 基准纯函数单测（Fake 事件流，不依赖 MCP / API key）。"""
+"""AIOps 基准纯函数单测（Fake 事件流，不依赖 MCP / API key）。"""
 
 from app.eval.aiops_benchmark import (
     aggregate,
     claim_reference_metrics,
-    compute_gate,
     judge_hallucination_rate,
     judge_hit,
     load_scenarios,
@@ -38,7 +37,7 @@ def multiagent_events() -> list[dict]:
     ]
 
 
-def legacy_events() -> list[dict]:
+def plain_events() -> list[dict]:
     return [
         {
             "type": "plan",
@@ -68,8 +67,8 @@ class TestSummarizeRun:
         assert summary["ev_refs_unresolved"] == 1
         assert summary["error"] is None
 
-    def test_legacy_has_no_claims_or_rounds(self) -> None:
-        summary = summarize_run(legacy_events())
+    def test_plain_events_have_no_claims_or_rounds(self) -> None:
+        summary = summarize_run(plain_events())
 
         assert summary["claim_ids"] == []
         assert summary["rounds"] == 0
@@ -91,7 +90,7 @@ class TestClaimReferenceMetrics:
         assert claim_reference_metrics(summary) == 0.5
 
     def test_none_when_no_refs(self) -> None:
-        summary = summarize_run(legacy_events())
+        summary = summarize_run(plain_events())
         assert claim_reference_metrics(summary) is None
 
 
@@ -108,11 +107,10 @@ class TestParseJsonObject:
         assert parse_json_object("{broken") is None
 
 
-class TestAggregateAndGate:
-    def make_run(self, scenario, engine, run, hit, hall_rate) -> dict:
+class TestAggregate:
+    def make_run(self, scenario, run, hit, hall_rate) -> dict:
         return {
             "scenario": scenario,
-            "engine": engine,
             "run": run,
             "wall_seconds": 10.0,
             "llm_calls": 20,
@@ -127,49 +125,21 @@ class TestAggregateAndGate:
             ),
         }
 
-    def test_aggregate_groups_by_scenario_engine(self) -> None:
+    def test_aggregate_groups_by_scenario(self) -> None:
         runs = [
-            self.make_run("gc-pressure", "legacy", 0, True, 0.2),
-            self.make_run("gc-pressure", "legacy", 1, False, 0.4),
-            self.make_run("gc-pressure", "multiagent", 0, True, 0.1),
+            self.make_run("gc-pressure", 0, True, 0.2),
+            self.make_run("gc-pressure", 1, False, 0.4),
+            self.make_run("oom-kill", 0, True, 0.1),
         ]
 
         agg = aggregate(runs)
-        assert agg["gc-pressure/legacy"]["hit_rate"] == 0.5
-        assert agg["gc-pressure/legacy"]["hallucination_rate"] == 0.3
-        assert agg["gc-pressure/multiagent"]["hit_rate"] == 1.0
-        assert agg["gc-pressure/multiagent"]["hallucination_rate"] == 0.1
-
-    def test_gate_pass_and_fail(self) -> None:
-        runs_pass = [
-            self.make_run("s", "legacy", 0, True, 0.3),
-            self.make_run("s", "multiagent", 0, True, 0.1),
-        ]
-        assert compute_gate(runs_pass)["passed"] is True
-
-        runs_fail_hall = [
-            self.make_run("s", "legacy", 0, True, 0.1),
-            self.make_run("s", "multiagent", 0, True, 0.3),
-        ]
-        assert compute_gate(runs_fail_hall)["passed"] is False
-
-        runs_fail_hit = [
-            self.make_run("s", "legacy", 0, True, 0.3),
-            self.make_run("s", "multiagent", 0, False, 0.1),
-        ]
-        assert compute_gate(runs_fail_hit)["passed"] is False
-
-    def test_gate_skips_unjudged_runs(self) -> None:
-        runs = [
-            self.make_run("s", "legacy", 0, None, None),
-            self.make_run("s", "multiagent", 0, None, None),
-        ]
-        gate = compute_gate(runs)
-        assert gate["passed"] is False
-        assert gate["hit_rate"]["legacy"] is None
+        assert agg["gc-pressure"]["hit_rate"] == 0.5
+        assert agg["gc-pressure"]["hallucination_rate"] == 0.3
+        assert agg["oom-kill"]["hit_rate"] == 1.0
+        assert agg["oom-kill"]["hallucination_rate"] == 0.1
 
     def test_judge_hallucination_rate_zero_claims(self) -> None:
-        run = self.make_run("s", "legacy", 0, True, None)
+        run = self.make_run("s", 0, True, None)
         run["judge_hallucination"] = {"total_claims": 0, "unsupported_claims": 0}
         assert judge_hallucination_rate(run) == 0.0
         assert judge_hit(run) is True

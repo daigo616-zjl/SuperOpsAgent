@@ -19,7 +19,7 @@ from app.agent.aiops.diagnosis_models import (
     Hypothesis,
     SupervisorDecision,
 )
-from app.agent.aiops.models import DiagnosisContext
+from app.agent.aiops.diagnosis_models import DiagnosisContext
 from app.agent.aiops.orchestrator import supervisor as supervisor_module
 from app.agent.aiops.orchestrator.graph import build_orchestrator_graph
 from app.agent.aiops.orchestrator.reporter import strip_unresolved_claims

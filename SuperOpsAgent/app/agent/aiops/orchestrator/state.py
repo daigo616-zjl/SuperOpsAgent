@@ -10,12 +10,12 @@ from typing import Annotated, TypedDict
 from app.agent.aiops.diagnosis_models import (
     AdjudicationDecision,
     BudgetLedger,
+    DiagnosisContext,
     Directive,
     EvidenceCard,
     Hypothesis,
     SupervisorDecision,
 )
-from app.agent.aiops.models import DiagnosisContext
 
 
 class InvestigateTask(TypedDict):

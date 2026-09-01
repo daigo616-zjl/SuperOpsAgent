@@ -33,8 +33,7 @@ http://localhost:18000/api/health
 - **Reporter** 流式生成最终报告，并按证据卡 claim 白名单剥离未支撑的
   `[ev-*]` 引用（反幻觉）。
 
-引擎通过 `AIOPS_ENGINE` 切换（`multiagent` 默认 / `legacy` 保留旧
-plan-execute-replan 流程用于 A/B 对比）。
+旧 plan-execute-replan 引擎（legacy）已于 P6 移除，星型编排是唯一路径。
 
 ### 预算与超时配置
 
@@ -55,20 +54,26 @@ plan-execute-replan 流程用于 A/B 对比）。
 可用剧本：`db-slow-query`、`distractor-cpu`、`gc-pressure`、`no-fault`、
 `oom-kill`。同一剧本数据按时间窗确定性播种。
 
-### A/B 双引擎基准
+### 场景基准
 
 ```bash
 # 先停掉 start-windows.bat 启动的服务（基准需要独占 18003/18004 端口）
-python scripts/run_aiops_scenarios.py                # 5 剧本 × 2 引擎 × 3 次
-python scripts/run_aiops_scenarios.py --runs 1       # 快速全量（10 次）
-python scripts/run_aiops_scenarios.py --scenarios gc-pressure --engines multiagent
+python scripts/run_aiops_scenarios.py                # 5 剧本 × 3 次
+python scripts/run_aiops_scenarios.py --runs 1       # 快速全量（5 次）
+python scripts/run_aiops_scenarios.py --scenarios gc-pressure --runs 1
 python scripts/run_aiops_scenarios.py --no-judge     # 只跑诊断不评分
 ```
 
 每个剧本独占启动一组 mock MCP 子进程，跑完即停。判分使用 `EVAL_MODEL`
-（默认 qwen-max）做根因命中与幻觉审计；门禁：**multiagent 命中率 ≥ legacy
-且 幻觉率 < legacy**，exit code 反映门禁结果。明细写入
+（默认 qwen3.7-flash）做根因命中与幻觉审计。明细写入
 `eval/reports/aiops/`（已 gitignore）。
+
+冒烟测试（真实 HTTP SSE 面跑一次完整诊断，约 1-5 分钟）：
+
+```bash
+make smoke-aiops                        # 默认 db-slow-query 剧本
+make smoke-aiops SCENARIO=oom-kill      # 换剧本
+```
 
 ## PostgreSQL 权威 RAG 文档库
 

@@ -10,8 +10,6 @@ from app.agent.mcp_client import get_mcp_client_with_retry
 from app.config import config
 from app.tools import get_current_time, retrieve_knowledge
 
-from .models import DiagnosticPlan
-
 
 class ToolDescriptor(BaseModel):
     name: str
@@ -70,24 +68,6 @@ class ToolRegistry:
             ensure_ascii=False,
             indent=2,
         )
-
-    def validate_plan(self, plan: DiagnosticPlan) -> None:
-        """对无需解析运行时引用的计划部分做静态校验。"""
-        for step in plan.steps:
-            descriptor = self.get_descriptor(step.tool_call.tool_name)
-            schema = descriptor.input_schema
-            properties = schema.get("properties", {})
-            required = set(schema.get("required", []))
-            supplied = set(step.tool_call.arguments)
-            missing = required - supplied
-            if missing:
-                raise InvalidToolArgumentsError(f"步骤 {step.id} 缺少工具参数: {sorted(missing)}")
-            if schema.get("additionalProperties") is False:
-                unknown = supplied - set(properties)
-                if unknown:
-                    raise InvalidToolArgumentsError(
-                        f"步骤 {step.id} 包含未知工具参数: {sorted(unknown)}"
-                    )
 
 
 def _input_schema(tool: Any) -> dict[str, Any]:
