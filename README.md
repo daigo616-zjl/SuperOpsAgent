@@ -198,8 +198,7 @@ curl.exe -X POST http://localhost:18000/api/upload `
 诊断质量通过剧本化场景验证：`mcp_servers/scenarios/*.yaml` 注入告警、指标、
 日志与 `ground_truth.root_cause`，`MOCK_SCENARIO` 环境变量选择剧本；可用剧本
 `db-slow-query`、`distractor-cpu`、`gc-pressure`、`no-fault`、`oom-kill`。
-配套 A/B 场景基准（根因命中率/幻觉率门禁）与 SSE 冒烟脚本
-（`make smoke-aiops`，详见内层 `SuperOpsAgent/README.md`）。
+配套 A/B 场景基准（根因命中率/幻觉率门禁）与 SSE 冒烟脚本（`make smoke-aiops`）。
 
 ## 配置
 
