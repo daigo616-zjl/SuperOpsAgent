@@ -198,7 +198,10 @@ async def run_investigation(
     registry = await get_domain_registry(domain)
     model_name = config.aiops_investigator_model or config.rag_model
     llm = LLMFactory.create_qwen_chat_model(
-        model=model_name, temperature=0, timeout=config.aiops_investigator_timeout
+        model=model_name,
+        temperature=0,
+        timeout=config.aiops_investigator_timeout,
+        max_retries=config.aiops_investigator_llm_retries,
     )
     agent = create_react_agent(
         llm,

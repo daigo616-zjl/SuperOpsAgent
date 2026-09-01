@@ -44,7 +44,8 @@ http://localhost:18000/api/health
 | `AIOPS_MAX_WALL_SECONDS` | 300 | 诊断墙钟预算（需容纳 60s 调用超时×重试的挂死 spell） |
 | `AIOPS_MIN_DISPATCH_WALL_SECONDS` | 90 | 剩余墙钟低于该值不再派发新取证任务 |
 | `AIOPS_INVESTIGATION_WALL_SECONDS` | 150 | 单个取证任务墙钟上限（Send 并行分支需全部返回，单域卡住时该上限兜底） |
-| `AIOPS_INVESTIGATOR_TIMEOUT` | 60 | 取证 LLM 单次调用超时（需小于单任务上限，挂死后重试才来得及在任务预算内完成） |
+| `AIOPS_INVESTIGATOR_TIMEOUT` | 60 | 取证 LLM 单次调用超时（非流式调用偶发静默挂死，靠它兜底） |
+| `AIOPS_INVESTIGATOR_LLM_RETRIES` | 0 | 取证 LLM 调用内重试次数（挂死常成 spell，立即重试只会再烧一个超时，默认关） |
 | `AIOPS_INVESTIGATOR_MODEL` 等 | 回退 `RAG_MODEL` | 各角色模型可单独覆盖 |
 
 ### Mock 故障剧本

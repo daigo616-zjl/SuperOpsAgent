@@ -142,13 +142,15 @@ class Settings(BaseSettings):
     # 剩余墙钟低于该值时不再派发新取证任务（一次取证 + 草稿生成约需 60-120s）
     aiops_min_dispatch_wall_seconds: float = Field(default=90.0, gt=0)
     # 单个取证任务的墙钟上限：LangGraph Send 分支需全部返回才交还
-    # supervisor，某个域卡住时该上限保证其余域的证据仍能进入评审；
-    # 需容纳单次 60s 超时 + 2 次重试的完整 spell
+    # supervisor，某个域卡住时该上限保证其余域的证据仍能进入评审
     aiops_investigation_wall_seconds: float = Field(default=150.0, gt=0)
     # 取证 LLM 单次调用超时：正常调用几秒内返回，但非流式调用偶发挂死
-    # （实测 >85s 静默）。该超时要小于单任务上限，挂死后 resilient 重试
-    # 才来得及在任务预算内完成；120s 会让一次挂死吞掉整个任务
+    # （实测 >85s 静默，且挂死常成 spell 连续发生——重试大概率继续挂）
     aiops_investigator_timeout: float = Field(default=60.0, gt=0)
+    # 取证 LLM 调用内重试次数：默认 0。挂死 spell 内立即重试只会再烧一个
+    # 调用超时（实测 60s 挂死 + 55s 重试挂死 = 烧掉任务预算 120s/150s），
+    # 失败交给任务层收敛；transient 错误由下一轮派发兜底
+    aiops_investigator_llm_retries: int = Field(default=0, ge=0)
     aiops_hypothesizer_model: str | None = None  # 默认回退到 rag_model
     aiops_adjudicator_model: str | None = None  # 默认回退到 rag_model
     aiops_reporter_model: str | None = None  # 默认回退到 rag_model
