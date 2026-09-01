@@ -143,9 +143,10 @@ class Settings(BaseSettings):
     # 单个取证任务的墙钟上限：LangGraph Send 分支需全部返回才交还
     # supervisor，某个域卡住时该上限保证其余域的证据仍能进入评审
     aiops_investigation_wall_seconds: float = Field(default=120.0, gt=0)
-    # 取证 LLM 单次调用超时：非流式工具调用偶发超过通用 llm_timeout(30s)，
-    # 过短的超时会触发重试与熔断级联，烧光整段 wall 预算
-    aiops_investigator_timeout: float = Field(default=120.0, gt=0)
+    # 取证 LLM 单次调用超时：正常调用几秒内返回，但非流式调用偶发挂死
+    # （实测 >85s 静默）。该超时要小于单任务上限，挂死后 resilient 重试
+    # 才来得及在任务预算内完成；120s 会让一次挂死吞掉整个任务
+    aiops_investigator_timeout: float = Field(default=60.0, gt=0)
     aiops_hypothesizer_model: str | None = None  # 默认回退到 rag_model
     aiops_adjudicator_model: str | None = None  # 默认回退到 rag_model
     aiops_reporter_model: str | None = None  # 默认回退到 rag_model

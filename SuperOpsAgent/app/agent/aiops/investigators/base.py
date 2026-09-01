@@ -4,6 +4,7 @@ LLM 只负责决定调用哪些工具、如何解读；证据出处（ClaimProve
 由代码从真实工具调用记录确定性构建，模型无法虚构 provenance。
 """
 
+import time
 from textwrap import dedent
 from typing import Any
 
@@ -193,6 +194,7 @@ async def run_investigation(
 ) -> EvidenceCard:
     """执行单个取证域的 ReAct 子图，产出带机械 provenance 的 EvidenceCard。"""
     logger.info(f"=== Investigator[{domain}]：执行指令 {directive.id} ===")
+    started_at = time.monotonic()
     registry = await get_domain_registry(domain)
     model_name = config.aiops_investigator_model or config.rag_model
     llm = LLMFactory.create_qwen_chat_model(
@@ -273,6 +275,6 @@ async def run_investigation(
     card = _build_evidence_card(draft, records, directive, domain, round_number)
     logger.info(
         f"Investigator[{domain}] 完成：{len(card.claims)} 条证据，"
-        f"调用 {len(records)} 次工具"
+        f"调用 {len(records)} 次工具，耗时 {time.monotonic() - started_at:.0f}s"
     )
     return card
