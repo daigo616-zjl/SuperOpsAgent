@@ -200,8 +200,10 @@ async def run_investigation(
     llm = LLMFactory.create_qwen_chat_model(
         model=model_name,
         temperature=0,
+        streaming=True,
         timeout=config.aiops_investigator_timeout,
         max_retries=config.aiops_investigator_llm_retries,
+        stall_seconds=config.aiops_investigator_stall_seconds,
     )
     agent = create_react_agent(
         llm,
@@ -238,7 +240,7 @@ async def run_investigation(
     # 明确错误反馈给模型重新声明，避免可修正错误终止整轮诊断。
     draft: EvidenceDraft | None = None
     last_error: str | None = None
-    for attempt in range(2):
+    for _attempt in range(2):
         raw = await draft_chain.ainvoke(draft_messages)
         candidate = raw if isinstance(raw, EvidenceDraft) else EvidenceDraft.model_validate(raw)
         last_error = _validate_draft(candidate, len(records), directive)

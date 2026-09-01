@@ -144,13 +144,15 @@ class Settings(BaseSettings):
     # 单个取证任务的墙钟上限：LangGraph Send 分支需全部返回才交还
     # supervisor，某个域卡住时该上限保证其余域的证据仍能进入评审
     aiops_investigation_wall_seconds: float = Field(default=150.0, gt=0)
-    # 取证 LLM 单次调用超时：正常调用几秒内返回，但非流式调用偶发挂死
-    # （实测 >85s 静默，且挂死常成 spell 连续发生——重试大概率继续挂）
+    # 取证 LLM 单次调用总超时（流式模式的整体兜底上限）
     aiops_investigator_timeout: float = Field(default=60.0, gt=0)
-    # 取证 LLM 调用内重试次数：默认 0。挂死 spell 内立即重试只会再烧一个
-    # 调用超时（实测 60s 挂死 + 55s 重试挂死 = 烧掉任务预算 120s/150s），
-    # 失败交给任务层收敛；transient 错误由下一轮派发兜底
-    aiops_investigator_llm_retries: int = Field(default=0, ge=0)
+    # 取证 LLM 流式调用块间空档上限：超过即判定挂死并中止本次调用。
+    # 非流式调用曾实测 >85s 静默挂死；流式下正常模型块间间隔远小于该值，
+    # 挂死能在 stall 窗口内被识别，而不必等满 60s 调用超时
+    aiops_investigator_stall_seconds: float = Field(default=20.0, gt=0)
+    # 取证 LLM 调用内重试次数：流式挂死检测后单次失败成本降到 ~stall 窗口
+    # （20s + 退避），任务预算内可以承受，默认恢复为 1
+    aiops_investigator_llm_retries: int = Field(default=1, ge=0)
     aiops_hypothesizer_model: str | None = None  # 默认回退到 rag_model
     aiops_adjudicator_model: str | None = None  # 默认回退到 rag_model
     aiops_reporter_model: str | None = None  # 默认回退到 rag_model

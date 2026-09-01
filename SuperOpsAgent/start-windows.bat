@@ -107,6 +107,11 @@ set MCP_MONITOR_PORT=%MONITOR_PORT%
 set MCP_CLS_URL=http://127.0.0.1:%CLS_PORT%/mcp
 set MCP_MONITOR_URL=http://127.0.0.1:%MONITOR_PORT%/mcp
 
+REM Mock 故障剧本：scenario_loader 只读进程环境变量，这里必须显式注入
+REM 可用剧本：db-slow-query / distractor-cpu / gc-pressure / no-fault / oom-kill
+if not defined MOCK_SCENARIO set MOCK_SCENARIO=db-slow-query
+echo [信息] Mock 剧本: %MOCK_SCENARIO%
+
 REM 检查本地 Elasticsearch
 echo [4/8] 检查 Elasticsearch...
 curl -fsS http://localhost:9200 >nul 2>&1

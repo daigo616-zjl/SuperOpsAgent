@@ -80,6 +80,7 @@ class LLMFactory:
         api_key: str | None = None,
         timeout: float | None = None,
         max_retries: int | None = None,
+        stall_seconds: float | None = None,
     ) -> ResilientChatModel:
         """创建地域、凭据配置一致的 ChatQwen 客户端。"""
         resolved_timeout = timeout if timeout is not None else config.llm_timeout
@@ -117,6 +118,7 @@ class LLMFactory:
             recovery_timeout=config.llm_circuit_recovery_timeout,
             retry_backoff=config.llm_retry_backoff,
             fallback=fallback,
+            stall_timeout=stall_seconds,
         )
 
 

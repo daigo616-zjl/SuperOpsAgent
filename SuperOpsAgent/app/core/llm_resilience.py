@@ -6,14 +6,22 @@ import asyncio
 import re
 import time
 from collections.abc import AsyncIterator, Callable
+from contextlib import suppress
+from functools import reduce
+from operator import add
 from typing import Any
 
+from langchain_core.messages import AIMessageChunk, message_chunk_to_message
 from langchain_core.runnables import Runnable
 from loguru import logger
 
 
 class CircuitOpenError(RuntimeError):
     """模型熔断期间拒绝请求。"""
+
+
+class StallTimeoutError(TimeoutError):
+    """流式调用在 stall_timeout 内未产生任何增量，按可重试超时处理。"""
 
 
 class _CircuitBreaker:
@@ -80,6 +88,7 @@ class ResilientChatModel(Runnable[Any, Any]):
         breaker: _CircuitBreaker,
         fallback: ResilientChatModel | None = None,
         retry_backoff: float = 0.25,
+        stall_timeout: float | None = None,
     ) -> None:
         self.model = model
         self.model_name = model_name
@@ -89,6 +98,7 @@ class ResilientChatModel(Runnable[Any, Any]):
         self.breaker = breaker
         self.fallback = fallback
         self.retry_backoff = max(0.0, retry_backoff)
+        self.stall_timeout = stall_timeout
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.model, name)
@@ -142,6 +152,8 @@ class ResilientChatModel(Runnable[Any, Any]):
                 await asyncio.sleep(delay)
 
     async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        if self.stall_timeout is not None:
+            return await self._ainvoke_streaming(input, config=config, **kwargs)
         try:
             return await self._call(lambda: self.model.ainvoke(input, config=config, **kwargs))
         except Exception as primary_error:
@@ -153,6 +165,60 @@ class ResilientChatModel(Runnable[Any, Any]):
                 primary_error,
             )
             return await self.fallback.ainvoke(input, config=config, **kwargs)
+
+    async def _stream_once(self, input: Any, config: Any, **kwargs: Any) -> Any:
+        """流式执行并聚合为完整结果；块间空档超过 stall_timeout 视为挂死。"""
+        chunks: list[Any] = []
+        stream = self.model.astream(input, config=config, **kwargs)
+        try:
+            async with self.rate_limiter, asyncio.timeout(self.timeout):
+                while True:
+                    try:
+                        async with asyncio.timeout(self.stall_timeout):
+                            chunk = await anext(stream)
+                    except StopAsyncIteration:
+                        break
+                    except TimeoutError as error:
+                        raise StallTimeoutError(
+                            f"model {self.model_name} stalled: no chunk "
+                            f"within {self.stall_timeout}s"
+                        ) from error
+                    chunks.append(chunk)
+        finally:
+            with suppress(Exception):
+                await stream.aclose()
+        if not chunks:
+            raise StallTimeoutError(
+                f"model {self.model_name} streaming ended without chunks"
+            )
+        if isinstance(chunks[0], AIMessageChunk):
+            return message_chunk_to_message(reduce(add, chunks))
+        # 结构化输出链的流式增量是不可相加的部分解析对象，最后一个即完整结果
+        return chunks[-1]
+
+    async def _ainvoke_streaming(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        await self.breaker.before_call()
+        attempts = self.max_retries + 1
+        for attempt in range(attempts):
+            try:
+                result = await self._stream_once(input, config=config, **kwargs)
+                await self.breaker.success()
+                return result
+            except Exception as error:
+                await self.breaker.failure()
+                if not self._is_retryable(error) or attempt == attempts - 1:
+                    raise
+                delay = self.retry_backoff * (2**attempt)
+                logger.warning(
+                    "LLM streaming retry: model={}, attempt={}/{}, delay={}s, error={}",
+                    self.model_name,
+                    attempt + 1,
+                    attempts - 1,
+                    round(delay, 3),
+                    error,
+                )
+                await asyncio.sleep(delay)
+        raise RuntimeError("LLM streaming call exhausted retries without a result")
 
     def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
         return asyncio.run(self.ainvoke(input, config=config, **kwargs))
@@ -211,6 +277,7 @@ class ResilientChatModel(Runnable[Any, Any]):
                 self.fallback._wrap(bound_fallback) if self.fallback and bound_fallback else None
             ),
             retry_backoff=self.retry_backoff,
+            stall_timeout=self.stall_timeout,
         )
 
 
@@ -226,6 +293,7 @@ def build_resilient_model(
     recovery_timeout: float,
     retry_backoff: float,
     fallback: Any = None,
+    stall_timeout: float | None = None,
 ) -> ResilientChatModel:
     limiter = _RateLimiter(max_concurrency, min_interval)
     breaker = _CircuitBreaker(failure_threshold, recovery_timeout)
@@ -239,6 +307,7 @@ def build_resilient_model(
             rate_limiter=limiter,
             breaker=_CircuitBreaker(failure_threshold, recovery_timeout),
             retry_backoff=retry_backoff,
+            stall_timeout=stall_timeout,
         )
     return ResilientChatModel(
         model,
@@ -249,4 +318,5 @@ def build_resilient_model(
         breaker=breaker,
         fallback=fallback_proxy,
         retry_backoff=retry_backoff,
+        stall_timeout=stall_timeout,
     )
