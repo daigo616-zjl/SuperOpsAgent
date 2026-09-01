@@ -4,16 +4,25 @@ SuperOpsAgent 是一个面向 On-Call 场景的智能运维助手。项目使用
 与 API 服务，通过 LangGraph 编排 RAG 问答和 AIOps 诊断流程，并结合 Milvus Lite、
 Elasticsearch、DashScope 和 MCP 完成知识检索、告警分析与诊断建议生成。
 
+AIOps 诊断采用**星型拓扑多 Agent 编排**：Supervisor 确定性中枢驱动假设鉴别诊断，
+metrics/logs/knowledge 三域取证 Agent 并行取证，证据出处由代码从真实工具调用
+确定性构建，评审收敛后流式生成报告。编排状态经 LangGraph checkpoint 持久化到
+PostgreSQL，证据卡与 claim 落 append-only Evidence Store，全程可溯源。
+
 当前版本以本地开发和功能验证为主：Milvus Lite 直接使用本地数据库文件，
-Elasticsearch 使用本机服务，CLS 与 Monitor MCP 返回模拟数据。
+Elasticsearch 使用本机服务，CLS 与 Monitor MCP 返回剧本化的模拟故障数据。
 
 ## 主要能力
 
 - RAG 问答：向量召回与 Elasticsearch BM25 双路检索。
 - 混合排序：支持 RRF 融合、Cross-Encoder 重排序和查询改写。
 - 文档知识库：PostgreSQL 保存权威原文，Outbox 异步建立向量及全文索引。
-- AIOps 诊断：Planner 生成结构化计划，Executor 确定性调用日志和监控工具，
-  Replanner 根据结构化结果继续、调整或结束诊断。
+- AIOps 星型多 Agent 诊断：Supervisor 确定性路由 + 假设驱动鉴别诊断，
+  三域并行取证，`[ev-*]` 引用按证据白名单反幻觉剥离。
+- 状态可溯源：编排状态 checkpoint 持久化到 PostgreSQL，证据卡与 claim
+  写入 append-only Evidence Store，可按 thread_id 追溯。
+- 可评测：剧本化故障注入（Mock MCP 场景）+ A/B 场景基准
+  （根因命中率/幻觉率门禁）+ SSE 接口冒烟脚本。
 - 流式输出：聊天和 AIOps 诊断均支持 SSE。
 - 离线评测：内置 Ragas 数据集加载、执行和 JSON 报告输出。
 - 本地运行：Milvus Lite 无需独立服务。
@@ -30,21 +39,22 @@ flowchart LR
     F --> L["DashScope LLM"]
     L --> A["回答"]
 
-    O["AIOps 诊断请求"] --> C["DiagnosisContext"]
-    C --> P["Planner：结构化计划"]
-    P --> X["Executor：校验并调用工具"]
-    X --> M["CLS / Monitor MCP"]
-    M --> S["结构化执行结果"]
-    S --> R["Replanner：继续 / 重规划 / 响应"]
-    R -->|continue / replan| X
-    R -->|respond| A2["诊断报告"]
+    O["AIOps 诊断请求"] --> S["Supervisor：确定性路由"]
+    S --> H["Hypothesizer：候选假设"]
+    H --> I["取证 Agent ×3：metrics / logs / knowledge"]
+    I --> M["CLS / Monitor MCP"]
+    I --> AD["Adjudicator：证据评审"]
+    AD -->|pending_decision| S
+    S -->|继续加钻| I
+    S --> R["Reporter：流式诊断报告"]
+    R --> A2["诊断报告（[ev-*] 可溯源引用）"]
 ```
 
 ## 环境要求
 
 - Python 3.11、3.12 或 3.13。
 - Elasticsearch 9.x；本项目已使用 9.2.4 验证。
-- PostgreSQL 14+，用于权威文档、索引注册表和任务 Outbox。
+- PostgreSQL 14+，用于权威文档、索引注册表、任务 Outbox、AIOps 证据存储与编排 checkpoint。
 - DashScope API Key，用于对话、查询改写、向量嵌入和评测。
 - Windows 推荐安装 `uv`；未安装时启动脚本会回退到 `pip`。
 
@@ -161,51 +171,35 @@ curl.exe -X POST http://localhost:18000/api/upload `
   -F "file=@aiops-docs/test_knowledge.md"
 ```
 
-## AIOps 结构化执行模型
+## AIOps 星型多 Agent 诊断
 
-AIOps 工作流不再让 Executor 从中文步骤中猜测工具和参数。三个节点的职责如下：
+`/api/aiops` 的诊断由星型拓扑编排驱动（实现见 `app/agent/aiops/`），Agent 之间
+零直连，一切消息经 Supervisor 中转：
 
-- Planner 根据诊断目标、`DiagnosisContext`、工具注册表及运维知识生成
-  `DiagnosticPlan`。每个步骤明确声明工具、参数、依赖、成功标准和失败策略。
-- Executor 不调用 LLM，也不分析中文关键词；它只校验工具、解析参数引用、校验
-  参数 Schema、调用工具并记录 `StepExecutionResult`。
-- Replanner 根据完整计划和结构化执行结果返回 `continue`、`replan` 或 `respond`。
+- **Supervisor** 是唯一中枢，确定性状态机路由（不调 LLM）：无假设 → 假设生成；
+  无指令 → 确定性生成三域取证任务并经 Send 扇出；有新证据 → 评审
+  （淘汰/加钻/收敛）；预算耗尽 → 按当前证据收敛输出。
+- **Hypothesizer** 基于告警与上下文生成候选假设，假设随取证任务下发，
+  取证 Agent 只在指定假设圈内取证。
+- **Investigators（取证域）** 各自跑 ReAct 子图调用 MCP 工具；证据出处
+  （ClaimProvenance）由代码从真实工具调用记录确定性构建，模型无法虚构。
+- **Adjudicator** 对新证据逐条评审，决定淘汰假设、继续加钻或收敛。
+- **Reporter** 流式生成最终报告，并按证据卡 claim 白名单剥离未支撑的
+  `[ev-*]` 引用（反幻觉）。
 
-一个计划步骤的简化示例如下：
+状态持久化分两层：
 
-```json
-{
-  "id": "query_cpu",
-  "title": "查询目标服务 CPU 指标",
-  "purpose": "确认目标服务是否存在持续 CPU 高负载",
-  "tool_call": {
-    "tool_name": "query_cpu_metrics",
-    "arguments": {
-      "service_name": {
-        "source": "context",
-        "path": "service_name"
-      }
-    }
-  },
-  "depends_on": [],
-  "success_criteria": [
-    {
-      "path": "data_points",
-      "operator": "not_empty"
-    }
-  ],
-  "failure_policy": "replan"
-}
-```
+- **编排状态**：每次诊断一个独立 thread，全程经 LangGraph checkpoint 写入
+  PostgreSQL（`checkpoints`/`checkpoint_writes`/`checkpoint_blobs`，首次使用
+  自动建表），进程重启后可按 thread_id 追溯。
+- **证据存储**：诊断会话、证据卡与 claim 写入 append-only Evidence Store
+  （`aiops_diagnosis_sessions`/`aiops_evidence_cards`/`aiops_evidence_claims`）。
 
-工具参数支持引用前置步骤输出。数值引用可以使用 `offset` 做加法偏移，例如查询
-最近 15 分钟日志时，将当前毫秒时间戳作为 `end_time`，并通过
-`"offset": -900000` 生成 `start_time`。Executor 只执行该结构化表达式，不包含
-监控或日志领域的硬编码分支。
-
-工具注册表由本地工具和 MCP 工具共同构建，向 Planner 和 Replanner 提供工具名、
-来源、描述和输入 JSON Schema，同时向 Executor 提供实际调用句柄。重复工具名、
-未知工具、缺失参数和非法参数都会形成明确的结构化失败结果。
+诊断质量通过剧本化场景验证：`mcp_servers/scenarios/*.yaml` 注入告警、指标、
+日志与 `ground_truth.root_cause`，`MOCK_SCENARIO` 环境变量选择剧本；可用剧本
+`db-slow-query`、`distractor-cpu`、`gc-pressure`、`no-fault`、`oom-kill`。
+配套 A/B 场景基准（根因命中率/幻觉率门禁）与 SSE 冒烟脚本
+（`make smoke-aiops`，详见内层 `SuperOpsAgent/README.md`）。
 
 ## 配置
 
@@ -294,6 +288,21 @@ DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 | `MCP_MONITOR_URL` | `http://localhost:18004/mcp` | Monitor MCP 地址 |
 | `AIOPS_DEFAULT_SERVICE_NAME` | `data-sync-service` | AIOps 请求未指定服务名时使用的默认目标服务 |
 
+### AIOps 诊断
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `AIOPS_MAX_ROUNDS` | `6` | 编排最大轮数 |
+| `AIOPS_MAX_INVOCATIONS` | `60` | LLM 迭代配额 |
+| `AIOPS_MAX_WALL_SECONDS` | `300` | 诊断墙钟预算 |
+| `AIOPS_MIN_DISPATCH_WALL_SECONDS` | `90` | 剩余墙钟低于该值不再派发新取证任务 |
+| `AIOPS_INVESTIGATION_WALL_SECONDS` | `150` | 单个取证任务墙钟上限（并行分支单域卡住时兜底） |
+| `AIOPS_INVESTIGATOR_TIMEOUT` | `60` | 取证 LLM 单次调用总超时 |
+| `AIOPS_INVESTIGATOR_STALL_SECONDS` | `20` | 取证 LLM 流式调用块间空档上限，超过即判定挂死 |
+| `AIOPS_INVESTIGATOR_LLM_RETRIES` | `1` | 取证 LLM 调用内重试次数 |
+| `AIOPS_INVESTIGATOR_MODEL` 等 | 回退 `RAG_MODEL` | 各角色模型可单独覆盖 |
+| `MOCK_SCENARIO` | `no-fault` | Mock MCP 故障剧本（`start-windows.bat` 默认注入 `db-slow-query`） |
+
 ## API
 
 | 方法 | 路径 | 用途 |
@@ -333,16 +342,20 @@ curl.exe -N -X POST http://localhost:18000/api/aiops `
 
 `service_name` 是可选字段。未传入时，服务端使用
 `AIOPS_DEFAULT_SERVICE_NAME`。请求解析完成后，服务名会写入统一的
-`DiagnosisContext`，Planner、Executor 和 Replanner 使用同一个上下文值。
+`DiagnosisContext`，Supervisor 与各取证域 Agent 使用同一个上下文值。
 
-诊断过程中，SSE 的 `plan` 事件返回完整的结构化计划；`step_complete` 事件中的
-`result` 包含步骤 ID、工具名、解析后的参数、执行状态、工具输出、成功标准判定、
-错误和耗时。最终 `report` 与 `complete` 事件仍返回 Markdown 诊断报告。
+诊断过程中，SSE 事件流依次返回：`status`（编排阶段）、`plan`（候选假设与
+派发计划）、`step_complete`（各域取证结果，含证据卡与 `ToolCallRecord`）、
+`report_chunk`（流式诊断报告片段，最终 `report` 事件被抑制）、`complete`
+（携带完整报告）。报告中的 `[ev-*]` 引用可对应 Evidence Store 中的证据 claim，
+未支撑的引用会被反幻觉护栏剥离。
 
 ## MCP 数据说明
 
 `mcp_servers/cls_server.py` 和 `mcp_servers/monitor_server.py` 当前提供模拟数据，
 用于验证日志搜索、CPU/内存指标、服务状态、进程列表和历史工单等诊断流程。
+同一份模拟数据按 `MOCK_SCENARIO` 剧本（见 `mcp_servers/scenarios/*.yaml`）
+确定性塑形，可注入连接池耗尽、OOM、GC 压力等故障及其干扰项。
 
 这两个 MCP 服务不会自动读取真实生产日志或监控系统。生产接入时，需要在对应
 Server 中替换数据生成逻辑，并配置腾讯云 CLS、Prometheus、Grafana 或其他实际
@@ -390,8 +403,8 @@ uv sync --extra dev
 执行测试和静态检查：
 
 ```powershell
-python -m pytest tests -q
-python -m ruff check app tests
+uv run --extra dev pytest tests -q
+uv run --extra dev ruff check app tests
 ```
 
 Milvus Lite 测试会使用临时数据库，不依赖 Docker 或外部 Milvus Server。
