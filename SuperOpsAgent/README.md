@@ -1,5 +1,23 @@
 # SuperOpsAgent
 
+## 项目简介
+
+SuperOpsAgent 是一个面向智能运维（AIOps）场景的 Agent 服务，围绕
+"知识问答 + 故障诊断"两大能力构建：
+
+- **知识库 RAG 问答**（`/api/chat(_stream)`）：PostgreSQL 为权威知识库
+  （文档、注册表、Outbox），Milvus / Elasticsearch 为可重建的派生索引，
+  Rerank 模型精排，流式输出。
+- **AIOps 星型多 Agent 故障诊断**（`/api/aiops`）：Supervisor 确定性中枢
+  驱动假设鉴别诊断，metrics/logs/knowledge 三域取证 Agent 并行取证，
+  证据出处由代码从真实工具调用确定性构建，评审收敛后流式生成报告，
+  `[ev-*]` 引用按证据白名单反幻觉剥离。
+- **状态可溯源**：编排状态经 LangGraph checkpoint 持久化到 PostgreSQL
+  （`checkpoints`/`checkpoint_writes`/`checkpoint_blobs`），证据卡与
+  claim 落 append-only Evidence Store，进程重启后可按 thread_id 追溯。
+- **可评测**：剧本化故障注入（Mock MCP 场景）+ A/B 场景基准
+  （根因命中率/幻觉率门禁）+ SSE 接口冒烟脚本。
+
 ## 本地启动
 
 项目使用 Milvus Lite，不需要单独启动 Milvus Server；Elasticsearch 和 PostgreSQL
