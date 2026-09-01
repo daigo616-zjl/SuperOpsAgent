@@ -4,10 +4,13 @@
 # ============================================================
 # 配置变量
 # ============================================================
-SERVER_URL = http://localhost:12000
+SERVER_URL = http://localhost:18000
 UPLOAD_API = $(SERVER_URL)/api/upload
 HEALTH_CHECK_API = $(SERVER_URL)/api/health
 DOCS_DIR = aiops-docs
+
+# Windows 用 .venv/Scripts/python.exe，Linux/macOS 用 .venv/bin/python
+VENV_PYTHON := $(shell if [ -f .venv/Scripts/python.exe ]; then echo .venv/Scripts/python.exe; else echo .venv/bin/python; fi)
 
 # 颜色输出
 GREEN = \033[0;32m
@@ -20,7 +23,8 @@ NC = \033[0m
         install install-dev dev run test test-quick format lint fix type-check \
         security pre-commit-install pre-commit check-all coverage docs shell \
         ipython watch add add-dev remove list-docs test-upload sync logs \
-        start-cls stop-cls start-monitor stop-monitor start-api stop-api status-mcp
+        start-cls stop-cls start-monitor stop-monitor start-api stop-api status-mcp \
+        smoke-aiops
 
 # ============================================================
 # 默认目标：显示帮助信息
@@ -39,6 +43,9 @@ help:
 	@echo "  $(YELLOW)make restart$(NC)      - 🔄 重启所有服务"
 	@echo "  $(YELLOW)make check$(NC)        - 🔍 检查 FastAPI 服务状态"
 	@echo "  $(YELLOW)make status-mcp$(NC)   - 📊 查看 MCP 服务状态"
+	@echo ""
+	@echo "$(CYAN)【冒烟测试】$(NC)"
+	@echo "  $(YELLOW)make smoke-aiops$(NC)  - 🧪 AIOps SSE 接口冒烟（SCENARIO=oom-kill 可换剧本）"
 	@echo ""
 	@echo "$(CYAN)【MCP 服务管理】$(NC)"
 	@echo "  $(YELLOW)make start-cls$(NC)     - 📋 启动 CLS MCP 服务"
@@ -238,7 +245,7 @@ start-api:
 		echo "$(GREEN)✅ FastAPI 服务已经在运行中 ($(SERVER_URL))$(NC)"; \
 	else \
 		echo "$(YELLOW)📦 正在启动 FastAPI 服务（后台运行）...$(NC)"; \
-		nohup .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 12000 > server.log 2>&1 & \
+		nohup .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 18000 > server.log 2>&1 & \
 		echo $$! > server.pid; \
 		echo "$(GREEN)✅ FastAPI 服务启动命令已执行$(NC)"; \
 		echo "$(YELLOW)   PID: $$(cat server.pid)$(NC)"; \
@@ -348,12 +355,23 @@ check:
 # 开发模式运行（前台，热重载）
 dev:
 	@echo "$(YELLOW)🔧 启动开发服务器（热重载）...$(NC)"
-	.venv/bin/python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 12000
+	.venv/bin/python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 18000
 
 # 生产模式运行（前台）
 run:
 	@echo "$(YELLOW)🏭 启动生产服务器...$(NC)"
-	.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 12000
+	.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 18000
+
+# ============================================================
+# 冒烟测试
+# ============================================================
+
+# AIOps SSE 接口冒烟：起 mock MCP + FastAPI，HTTP SSE 跑一次真实诊断并断言事件流。
+# 需 DASHSCOPE_API_KEY；换剧本: make smoke-aiops SCENARIO=oom-kill
+smoke-aiops:
+	@echo "$(YELLOW)🧪 AIOps SSE 接口冒烟测试（剧本: $(if $(SCENARIO),$(SCENARIO),db-slow-query)）...$(NC)"
+	@echo "$(YELLOW)   约 1-5 分钟，日志见 eval/reports/aiops/smoke-*.log$(NC)"
+	@$(VENV_PYTHON) scripts/smoke_aiops.py $(if $(SCENARIO),--scenario $(SCENARIO),)
 
 # ============================================================
 # 文档管理
