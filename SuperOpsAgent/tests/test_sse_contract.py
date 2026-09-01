@@ -13,13 +13,14 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
+from langgraph.checkpoint.memory import MemorySaver
 
 from app.agent.aiops.diagnosis_models import (
     AdjudicationDecision,
+    ClaimProvenance,
     Elimination,
     EvidenceCard,
     EvidenceClaim,
-    ClaimProvenance,
 )
 from app.agent.aiops.orchestrator.hypothesizer import HypothesisSet
 from app.services.aiops_service import AIOpsService
@@ -189,7 +190,7 @@ async def collect_events(service: AIOpsService, **kwargs) -> list[dict[str, Any]
 @pytest.mark.asyncio
 async def test_multiagent_full_flow_contract(monkeypatch) -> None:
     recorded = patch_multiagent_world(monkeypatch)
-    service = AIOpsService()
+    service = AIOpsService(checkpointer=MemorySaver())
 
     events = await collect_events(
         service, user_input="诊断 data-sync-service 告警", session_id="s-flow"
@@ -228,7 +229,7 @@ async def test_report_event_without_stream_writer(monkeypatch) -> None:
 
     patch_multiagent_world(monkeypatch)
     monkeypatch.setattr(reporter_module, "get_stream_writer", _raise)
-    service = AIOpsService()
+    service = AIOpsService(checkpointer=MemorySaver())
 
     events = await collect_events(service, user_input="诊断告警", session_id="s-nostream")
 
@@ -240,9 +241,9 @@ async def test_report_event_without_stream_writer(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_multiagent_budget_exhaustion_still_completes(monkeypatch) -> None:
-    recorded = patch_multiagent_world(monkeypatch)
+    patch_multiagent_world(monkeypatch)
     monkeypatch.setattr(aiops_service_module.config, "aiops_max_rounds", 1)
-    service = AIOpsService()
+    service = AIOpsService(checkpointer=MemorySaver())
 
     events = await collect_events(service, user_input="诊断告警", session_id="s-budget")
 
@@ -255,7 +256,7 @@ async def test_multiagent_budget_exhaustion_still_completes(monkeypatch) -> None
 @pytest.mark.asyncio
 async def test_diagnose_wrapper_maps_complete(monkeypatch) -> None:
     patch_multiagent_world(monkeypatch)
-    service = AIOpsService()
+    service = AIOpsService(checkpointer=MemorySaver())
 
     events = [
         event

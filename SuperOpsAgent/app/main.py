@@ -17,6 +17,7 @@ from app.config import config
 from app.core.es_client import es_client_manager
 from app.core.milvus_client import milvus_manager
 from app.core.postgres import postgres_manager
+from app.services.aiops_service import aiops_service
 from app.services.postgres_index_worker import postgres_index_worker
 from app.services.rerank_service import rerank_service
 
@@ -59,6 +60,8 @@ async def lifespan(app: FastAPI):
 
     # 关闭时执行
     postgres_index_worker.stop()
+    logger.info("🔌 正在关闭 AIOps checkpoint 连接池...")
+    await aiops_service.aclose()
     logger.info("🔌 正在关闭 Elasticsearch 连接...")
     await es_client_manager.close()
     logger.info("🔌 正在关闭 Milvus 连接...")

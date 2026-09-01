@@ -4,13 +4,17 @@ AIOps 诊断服务：星型多 Agent 编排（假设驱动鉴别诊断）
 supervisor 中心化确定性路由 + 假设驱动鉴别诊断。
 """
 
+import asyncio
 import os
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.postgres import PostgresSaver
 from loguru import logger
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from app.agent.aiops.diagnosis_models import (
     BudgetLedger,
@@ -39,15 +43,112 @@ def _scenario_id() -> str:
         return os.environ.get("MOCK_SCENARIO", "no-fault")
 
 
+class _AsyncPostgresSaverAdapter(BaseCheckpointSaver):
+    """把同步 PostgresSaver 桥接成异步接口。
+
+    Windows 上 uvicorn 运行在 ProactorEventLoop，psycopg async 模式不支持；
+    LangGraph 的 AsyncPregelLoop 又只调用 async 接口（不会自动回退到同步方法），
+    因此用 to_thread 把同步实现包成 async。
+    """
+
+    def __init__(self, sync_saver: PostgresSaver) -> None:
+        super().__init__()
+        self._sync = sync_saver
+
+    async def aget_tuple(self, config: dict[str, Any]) -> Any:
+        return await asyncio.to_thread(self._sync.get_tuple, config)
+
+    async def alist(
+        self,
+        config: dict[str, Any] | None,
+        *,
+        filter: dict[str, Any] | None = None,
+        before: dict[str, Any] | None = None,
+        limit: int | None = None,
+    ) -> Any:
+        for item in self._sync.list(config, filter=filter, before=before, limit=limit):
+            yield item
+
+    async def aput(
+        self,
+        config: dict[str, Any],
+        checkpoint: Any,
+        metadata: dict[str, Any],
+        new_versions: Any,
+    ) -> Any:
+        return await asyncio.to_thread(
+            self._sync.put, config, checkpoint, metadata, new_versions
+        )
+
+    async def aput_writes(
+        self,
+        config: dict[str, Any],
+        writes: Any,
+        task_id: str,
+        task_path: str = "",
+    ) -> None:
+        await asyncio.to_thread(
+            self._sync.put_writes, config, writes, task_id, task_path
+        )
+
+    async def adelete_thread(self, thread_id: str) -> None:
+        await asyncio.to_thread(self._sync.delete_thread, thread_id)
+
+
 class AIOpsService:
     """AIOps 诊断服务"""
 
-    def __init__(self):
-        """初始化服务"""
-        self.multiagent_graph = build_orchestrator_graph(
-            checkpointer=MemorySaver()
-        )
+    def __init__(self, checkpointer: BaseCheckpointSaver | None = None):
+        """初始化服务
+
+        checkpointer 默认惰性创建持久化的 PostgresSaver（编排状态
+        checkpoint 进 PostgreSQL，进程重启后可按 thread_id 追溯/恢复）；
+        测试或无 DB 环境可注入自定义实现（如 MemorySaver）。
+        """
+        self._injected_checkpointer = checkpointer
+        self._multiagent_graph: Any | None = None
+        self._graph_lock = asyncio.Lock()
+        self._pool: ConnectionPool | None = None
         logger.info("AIOps Service 初始化完成（星型多 Agent 编排）")
+
+    async def _ensure_graph(self) -> Any:
+        if self._multiagent_graph is None:
+            async with self._graph_lock:
+                if self._multiagent_graph is None:
+                    if self._injected_checkpointer is not None:
+                        checkpointer = self._injected_checkpointer
+                    else:
+                        checkpointer = self._build_postgres_checkpointer()
+                    self._multiagent_graph = build_orchestrator_graph(
+                        checkpointer=checkpointer
+                    )
+        return self._multiagent_graph
+
+    def _build_postgres_checkpointer(self) -> _AsyncPostgresSaverAdapter:
+        dsn = config.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+        pool = ConnectionPool(
+            dsn,
+            min_size=1,
+            max_size=config.database_pool_size,
+            open=True,
+            kwargs={"autocommit": True, "row_factory": dict_row},
+        )
+        try:
+            sync_saver = PostgresSaver(pool)
+            # 幂等：首次启动创建 checkpoints/checkpoint_writes/checkpoint_blobs 表
+            sync_saver.setup()
+            saver = _AsyncPostgresSaverAdapter(sync_saver)
+        except Exception:
+            pool.close()
+            raise
+        self._pool = pool
+        logger.info("AIOps 编排状态 checkpoint 已接入 PostgreSQL（持久化）")
+        return saver
+
+    async def aclose(self) -> None:
+        if self._pool is not None:
+            self._pool.close()
+            self._pool = None
 
     async def execute(
         self,
@@ -100,13 +201,15 @@ class AIOpsService:
         self._start_session(session_id, diagnosis_context, budget)
 
         try:
-            # MemorySaver 全局共享，thread_id 加请求级后缀避免并发串话
+            # 每次诊断一个独立 thread：编排状态全程 checkpoint 进 PostgreSQL，
+            # thread_id 加请求级后缀避免并发串话
             thread_id = f"{session_id}:{uuid.uuid4().hex[:8]}"
             config_dict = {"configurable": {"thread_id": thread_id}}
 
+            graph = await self._ensure_graph()
             report_streamed = False
             final_response = ""
-            async for stream_mode, event in self.multiagent_graph.astream(
+            async for stream_mode, event in graph.astream(
                 input=initial_state,
                 config=config_dict,
                 stream_mode=["updates", "custom"],
