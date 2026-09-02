@@ -143,7 +143,8 @@ def test_postgres_initialize_schema_executes_all_migrations(monkeypatch) -> None
     manager._initialize_schema()
 
     assert len(executed) == len(MIGRATIONS)
-    assert "aiops_evidence_claims" in executed[-1]
+    assert "aiops_evidence_claims" in executed[1]
+    assert "rag_memory_facts" in executed[-1]
 
 
 def test_evidence_schema_defines_append_only_tables() -> None:

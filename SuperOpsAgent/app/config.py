@@ -48,9 +48,6 @@ class Settings(BaseSettings):
     rag_temperature: float = 0.1
     rag_max_tokens: int = 1200
     rag_enable_thinking: bool = False
-    rag_context_summary_model: str = "qwen3.5-flash"
-    rag_context_summary_trigger_messages: int = 12
-    rag_context_summary_keep_messages: int = 6
     rag_recall_size: int = 20
     rag_rerank_enabled: bool = True
     rag_rerank_model: str = "BAAI/bge-reranker-base"
@@ -106,6 +103,28 @@ class Settings(BaseSettings):
     index_worker_max_attempts: int = 8
     index_repair_interval_seconds: int = 300
     index_repair_batch_size: int = 100
+
+    # Redis 短期记忆（滑动窗口 + 滚动摘要）
+    redis_url: str = "redis://localhost:6379/0"
+    redis_timeout: int = 3
+    memory_enabled: bool = True
+    memory_window_messages: int = 12
+    memory_compress_keep: int = 6
+    memory_redis_ttl_seconds: int = 259200  # 72h 滑动续期
+
+    # 长期记忆：抽取与三路存储（PG 强事实 / ES 长文本 / Milvus 语义）
+    memory_extract_model: str = "qwen3.5-flash"
+    memory_extract_confidence_min: float = 0.6
+    memory_extract_max_tokens: int = 800
+    memory_facts_max: int = 20
+    memory_es_top_k: int = 5
+    memory_vec_top_k: int = 5
+    memory_vec_min_score: float = 0.6
+    es_memory_index: str = "rag_memory"
+    milvus_memory_collection: str = "rag_memory_vec"
+    memory_worker_poll_seconds: float = 1.0
+    memory_worker_lease_seconds: int = 300
+    memory_worker_max_attempts: int = 8
 
     # 文档分块配置
     chunk_max_size: int = 800

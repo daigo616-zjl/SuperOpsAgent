@@ -12,6 +12,7 @@ from app.config import config
 MIGRATIONS: list[str] = [
     "001_postgres_knowledge.sql",
     "002_aiops_evidence.sql",
+    "003_rag_memory.sql",
 ]
 
 

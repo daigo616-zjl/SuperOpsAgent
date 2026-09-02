@@ -38,6 +38,7 @@ dependencies = [
     "datasets>=2.18.0",
     "ragas==0.4.3",
     "langgraph-checkpoint-postgres>=3.1.2",
+    "redis>=5.0,<6",
 ]
 
 [project.scripts]

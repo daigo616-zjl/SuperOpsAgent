@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import SummarizationMiddleware
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import MemorySaver
 from loguru import logger
@@ -17,6 +16,9 @@ from loguru import logger
 from app.agent.mcp_client import get_mcp_client_with_retry
 from app.config import config
 from app.core.llm_factory import LLMFactory
+from app.memory.memory_writer import memory_write_worker
+from app.memory.recall_service import memory_recall_service
+from app.memory.short_term import short_term_memory, window_messages_to_langchain
 from app.tools import get_current_time, retrieve_knowledge
 from app.tools.knowledge_tool import (
     capture_retrieval_for_session,
@@ -35,6 +37,16 @@ class RagQueryWithContextResult:
     retrieval_attempted: bool
     retrieval_candidate_sources: list[str]
     reranked_sources: list[str]
+
+
+@dataclass(slots=True)
+class _TurnContext:
+    """单轮对话的上下文组装结果"""
+
+    thread_id: str
+    messages: list[Any]
+    memory_mode: bool  # True: 短期记忆走 Redis；False: 降级走 checkpoint 跨轮累积
+    summary: str = ""  # 本轮起点的滚动摘要（随 outbox 快照送长期记忆抽取）
 
 
 def _document_sources(documents: list[Any]) -> list[str]:
@@ -108,25 +120,11 @@ class RagAgentService:
 
         # 合并所有工具
         all_tools = self.tools + self.mcp_tools
-        summary_model = LLMFactory.create_qwen_chat_model(
-            model=config.rag_context_summary_model or self.model_name,
-            temperature=0,
-            streaming=False,
-            max_tokens=800,
-            enable_thinking=False,
-        )
 
         self.agent = create_agent(
             self.model,
             tools=all_tools,
             checkpointer=self.checkpointer,
-            middleware=[
-                SummarizationMiddleware(
-                    model=summary_model,
-                    trigger=("messages", config.rag_context_summary_trigger_messages),
-                    keep=("messages", config.rag_context_summary_keep_messages),
-                )
-            ],
         )
 
         self._agent_initialized = True
@@ -181,6 +179,62 @@ class RagAgentService:
         result = await self.query_with_context(question=question, session_id=session_id)
         return result.answer
 
+    async def _start_turn(self, session_id: str, question: str) -> _TurnContext:
+        """开启一轮对话：优先 Redis 短期记忆组装上下文，不可用时降级 checkpoint 路径"""
+        if await short_term_memory.available():
+            seq = await short_term_memory.next_seq(session_id)
+            if seq is not None:
+                summary, window = await short_term_memory.build_context(session_id)
+                system_content = self.system_prompt
+                try:
+                    # 长期记忆三路召回，注入 system prompt（失败降级为无记忆块）
+                    memory_ctx = await memory_recall_service.recall(question, session_id)
+                    memory_block = memory_recall_service.format_prompt_block(memory_ctx)
+                    if memory_block:
+                        system_content = f"{self.system_prompt}\n\n{memory_block}"
+                except Exception as e:
+                    logger.warning(f"[会话 {session_id}] 长期记忆召回失败，跳过注入: {e}")
+
+                messages: list[Any] = [SystemMessage(content=system_content)]
+                if summary:
+                    messages.append(SystemMessage(content=f"[历史对话摘要]\n{summary}"))
+                messages.extend(window_messages_to_langchain(window))
+                messages.append(HumanMessage(content=question))
+                logger.debug(
+                    f"[会话 {session_id}] 短期记忆上下文: 摘要 {len(summary)} 字, 窗口 {len(window)} 条"
+                )
+                return _TurnContext(
+                    thread_id=f"{session_id}:{seq}",
+                    messages=messages,
+                    memory_mode=True,
+                    summary=summary,
+                )
+
+        # 降级路径：与旧行为一致，checkpoint 按原始 session_id 跨轮累积
+        return _TurnContext(
+            thread_id=session_id,
+            messages=[SystemMessage(content=self.system_prompt), HumanMessage(content=question)],
+            memory_mode=False,
+        )
+
+    async def _finish_turn(self, turn: _TurnContext, session_id: str, answer: str) -> None:
+        """轮末持久化：写入 Redis 短期记忆、释放本轮 checkpoint、入队长期记忆抽取"""
+        if not answer:
+            return
+        question = turn.messages[-1].content
+        if turn.memory_mode:
+            appended = await short_term_memory.append_turn(session_id, question, answer)
+            if appended:
+                try:
+                    self.checkpointer.delete_thread(turn.thread_id)
+                except Exception as e:
+                    logger.warning(f"[会话 {session_id}] 释放轮次 checkpoint 失败: {turn.thread_id}, {e}")
+
+        # 长期记忆走 PG outbox，Redis 降级时同样入队
+        memory_write_worker.enqueue_turn(
+            session_id, session_id, question, answer, summary=turn.summary,
+        )
+
     async def query_with_context(
         self,
         question: str,
@@ -202,9 +256,9 @@ class RagAgentService:
 
             logger.info(f"[会话 {session_id}] RAG Agent 收到查询（非流式）: {question}")
 
-            messages = [SystemMessage(content=self.system_prompt), HumanMessage(content=question)]
-            agent_input = {"messages": messages}
-            config_dict = {"configurable": {"thread_id": session_id}}
+            turn = await self._start_turn(session_id, question)
+            agent_input = {"messages": turn.messages}
+            config_dict = {"configurable": {"thread_id": turn.thread_id}}
 
             with capture_retrieval_for_session(session_id):
                 result = await self.agent.ainvoke(
@@ -224,6 +278,7 @@ class RagAgentService:
                     logger.info(f"[会话 {session_id}] Agent 调用了工具: {tool_names}")
 
                 logger.info(f"[会话 {session_id}] RAG Agent 查询完成（非流式）")
+                await self._finish_turn(turn, session_id, answer)
                 trace = pop_captured_retrieval_trace(session_id)
                 docs = trace.final_docs if trace else []
                 return RagQueryWithContextResult(
@@ -283,15 +338,15 @@ class RagAgentService:
 
             logger.info(f"[会话 {session_id}] RAG Agent 收到查询（流式）: {question}")
 
-            # 构建消息列表（系统提示 + 用户问题）
-            messages = [SystemMessage(content=self.system_prompt), HumanMessage(content=question)]
+            turn = await self._start_turn(session_id, question)
 
             # 构建 Agent 输入
-            agent_input = {"messages": messages}
+            agent_input = {"messages": turn.messages}
 
             # 配置 thread_id（用于会话持久化）
-            config_dict = {"configurable": {"thread_id": session_id}}
+            config_dict = {"configurable": {"thread_id": turn.thread_id}}
 
+            answer_parts: list[str] = []
             async for token, metadata in self.agent.astream(
                 input=agent_input,
                 config=config_dict,
@@ -312,6 +367,7 @@ class RagAgentService:
                             if isinstance(block, dict) and block.get("type") == "text":
                                 text_content = block.get("text", "")
                                 if text_content:
+                                    answer_parts.append(text_content)
                                     yield {
                                         "type": "content",
                                         "data": text_content,
@@ -319,6 +375,7 @@ class RagAgentService:
                                     }
 
             logger.info(f"[会话 {session_id}] RAG Agent 查询完成（流式）")
+            await self._finish_turn(turn, session_id, "".join(answer_parts))
             yield {"type": "complete"}
 
         except Exception as e:
@@ -326,16 +383,29 @@ class RagAgentService:
             yield {"type": "content", "data": "当前模型服务暂时不可用，请稍后重试。"}
             yield {"type": "complete"}
 
-    def get_session_history(self, session_id: str) -> list:
+    async def get_session_history(self, session_id: str) -> list:
         """
-        获取会话历史（从 MemorySaver checkpointer 中读取）
+        获取会话历史（优先 Redis 短期记忆，降级读 MemorySaver checkpoint）
 
         Args:
-            session_id: 会话ID（即 thread_id）
+            session_id: 会话ID
 
         Returns:
             list: 消息历史列表 [{"role": "user|assistant", "content": "...", "timestamp": "..."}]
         """
+        if await short_term_memory.available():
+            window = await short_term_memory.history(session_id)
+            history = [
+                {
+                    "role": item.get("role", "user"),
+                    "content": item.get("content", ""),
+                    "timestamp": item.get("ts") or "",
+                }
+                for item in window
+            ]
+            logger.info(f"获取会话历史(Redis): {session_id}, 消息数量: {len(history)}")
+            return history
+
         try:
             # 使用 checkpointer 的 get 方法获取最新的检查点
             config = {"configurable": {"thread_id": session_id}}
@@ -386,9 +456,9 @@ class RagAgentService:
             logger.error(f"获取会话历史失败: {session_id}, 错误: {e}")
             return []
 
-    def clear_session(self, session_id: str) -> bool:
+    async def clear_session(self, session_id: str) -> bool:
         """
-        清空会话历史（从 MemorySaver checkpointer 中删除）
+        清空会话历史（Redis 短期记忆 + MemorySaver checkpoint）
 
         Args:
             session_id: 会话ID（即 thread_id）
@@ -397,6 +467,8 @@ class RagAgentService:
             bool: 是否成功
         """
         try:
+            await short_term_memory.clear(session_id)
+
             # 使用 checkpointer 的 delete_thread 方法删除该 thread 的所有检查点
             self.checkpointer.delete_thread(session_id)
 

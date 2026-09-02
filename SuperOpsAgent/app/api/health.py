@@ -10,6 +10,7 @@ from app.config import config
 from app.core.es_client import es_client_manager
 from app.core.milvus_client import milvus_manager
 from app.core.postgres import postgres_manager
+from app.memory.redis_client import redis_client_manager
 
 router = APIRouter()
 
@@ -75,6 +76,21 @@ async def health_check():
             "status": "error",
             "message": f"Elasticsearch 检查失败: {str(e)}"
         }
+
+    # Redis 短期记忆：不可用时自动降级到 checkpoint 路径，不计入整体健康状态
+    if config.memory_enabled:
+        try:
+            redis_healthy = await redis_client_manager.health_check()
+            health_data["redis"] = {
+                "status": "connected" if redis_healthy else "disconnected",
+                "message": "Redis 连接正常" if redis_healthy else "Redis 不可用，短期记忆已降级",
+            }
+        except Exception as e:
+            logger.warning(f"Redis 健康检查失败: {e}")
+            health_data["redis"] = {
+                "status": "error",
+                "message": f"Redis 检查失败: {str(e)}",
+            }
 
     # 判断整体健康状态
     overall_status = "healthy"
