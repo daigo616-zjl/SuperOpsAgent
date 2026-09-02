@@ -4,10 +4,16 @@ SuperOpsAgent 是一个面向 On-Call 场景的智能运维助手。项目使用
 与 API 服务，通过 LangGraph 编排 RAG 问答和 AIOps 诊断流程，并结合 Milvus Lite、
 Elasticsearch、DashScope 和 MCP 完成知识检索、告警分析与诊断建议生成。
 
-AIOps 诊断采用**星型拓扑多 Agent 编排**：Supervisor 确定性中枢驱动假设鉴别诊断，
+AIOps 诊断采用**中心化多 Agent 编排**：Supervisor 确定性中枢驱动假设鉴别诊断，
 metrics/logs/knowledge 三域取证 Agent 并行取证，证据出处由代码从真实工具调用
 确定性构建，评审收敛后流式生成报告。编排状态经 LangGraph checkpoint 持久化到
 PostgreSQL，证据卡与 claim 落 append-only Evidence Store，全程可溯源。
+
+RAG 链路采用**分层记忆系统**：短期记忆由 Redis 承载（滑动窗口 + 滚动摘要，
+TTL 滑动续期，Redis 不可用时运行时熔断自动降级回 checkpoint 路径）；长期记忆
+按异构三路存储——强事实进 PostgreSQL（最高召回优先级）、半结构化文本进
+Elasticsearch（BM25 召回）、模糊语义进 Milvus（最低优先级语义补充），每轮对话
+结束后由 Outbox Worker 异步调用小模型抽取分类写入，下一轮问答前三路召回融合注入。
 
 当前版本以本地开发和功能验证为主：Milvus Lite 直接使用本地数据库文件，
 Elasticsearch 使用本机服务，CLS 与 Monitor MCP 返回剧本化的模拟故障数据。
@@ -16,6 +22,9 @@ Elasticsearch 使用本机服务，CLS 与 Monitor MCP 返回剧本化的模拟�
 
 - RAG 问答：向量召回与 Elasticsearch BM25 双路检索。
 - 混合排序：支持 RRF 融合、Cross-Encoder 重排序和查询改写。
+- 分层记忆：Redis 短期记忆（滑动窗口 + 滚动摘要）+ 异构三路长期记忆
+  （PG 强事实 / ES 文本 / Milvus 语义），LLM 异步抽取、三路召回融合注入，
+  Redis 故障自动熔断降级。
 - 文档知识库：PostgreSQL 保存权威原文，Outbox 异步建立向量及全文索引。
 - AIOps 星型多 Agent 诊断：Supervisor 确定性路由 + 假设驱动鉴别诊断，
   三域并行取证，`[ev-*]` 引用按证据白名单反幻觉剥离。
@@ -32,30 +41,37 @@ Elasticsearch 使用本机服务，CLS 与 Monitor MCP 返回剧本化的模拟�
 ```mermaid
 flowchart LR
     U["用户问题"] --> Q["查询改写"]
+    R["Redis 短期记忆<br/>窗口消息 + 滚动摘要"] --> C["上下文组装"]
+    M["长期记忆召回融合<br/>PG 强事实 / ES / Milvus"] --> C
     Q --> V["Milvus Lite 向量召回"]
     Q --> E["Elasticsearch BM25"]
     V --> F["RRF 融合与重排序"]
     E --> F
-    F --> L["DashScope LLM"]
+    F --> C
+    C --> L["DashScope LLM"]
     L --> A["回答"]
+    A -.->|Outbox Worker<br/>异步抽取分类| M
+    A -.->|写入窗口/续期| R
 
     O["AIOps 诊断请求"] --> S["Supervisor：确定性路由"]
     S --> H["Hypothesizer：候选假设"]
     H --> I["取证 Agent ×3：metrics / logs / knowledge"]
-    I --> M["CLS / Monitor MCP"]
+    I --> M2["CLS / Monitor MCP"]
     I --> AD["Adjudicator：证据评审"]
     AD -->|pending_decision| S
     S -->|继续加钻| I
-    S --> R["Reporter：流式诊断报告"]
-    R --> A2["诊断报告（[ev-*] 可溯源引用）"]
+    S --> R2["Reporter：流式诊断报告"]
+    R2 --> A2["诊断报告（[ev-*] 可溯源引用）"]
 ```
 
 ## 环境要求
 
 - Python 3.11、3.12 或 3.13。
+- Redis 6.x/7.x，用于 RAG 短期记忆；未启动时自动降级，不阻断启动。
 - Elasticsearch 9.x；本项目已使用 9.2.4 验证。
-- PostgreSQL 14+，用于权威文档、索引注册表、任务 Outbox、AIOps 证据存储与编排 checkpoint。
-- DashScope API Key，用于对话、查询改写、向量嵌入和评测。
+- PostgreSQL 14+，用于权威文档、索引注册表、任务 Outbox、长期记忆强事实、
+  AIOps 证据存储与编排 checkpoint。
+- DashScope API Key，用于对话、查询改写、记忆抽取、向量嵌入和评测。
 - Windows 推荐安装 `uv`；未安装时启动脚本会回退到 `pip`。
 
 默认服务地址：
@@ -64,8 +80,9 @@ flowchart LR
 | --- | --- | --- |
 | Web/API | `http://localhost:18000` | FastAPI 与静态页面 |
 | API 文档 | `http://localhost:18000/docs` | Swagger UI |
+| Redis | `localhost:6379` | RAG 短期记忆 |
 | Elasticsearch | `http://localhost:9200` | 本地 Elasticsearch 9.x |
-| PostgreSQL | `localhost:5432` | 权威文档、注册表与 Outbox |
+| PostgreSQL | `localhost:5432` | 权威文档、注册表、Outbox 与长期记忆 |
 | CLS MCP | `http://localhost:18003/mcp` | 模拟日志查询 |
 | Monitor MCP | `http://localhost:18004/mcp` | 模拟监控查询 |
 
@@ -107,7 +124,8 @@ curl.exe http://localhost:9200
 2. 创建或同步 `.venv`。
 3. 检查 Elasticsearch。
 4. 准备 `data/` 下的 Milvus Lite 数据库。
-5. 启动 CLS MCP、Monitor MCP 和 FastAPI。
+5. 启动 CLS MCP、Monitor MCP 和 FastAPI（同时启动长期记忆 Outbox Worker；
+   Redis 未启动时短期记忆自动降级，不影响 API 可用）。
 6. 启动 PostgreSQL Outbox 索引 Worker；不会扫描任何本地文档目录。
 
 停止项目：
@@ -200,6 +218,43 @@ curl.exe -X POST http://localhost:18000/api/upload `
 `db-slow-query`、`distractor-cpu`、`gc-pressure`、`no-fault`、`oom-kill`。
 配套 A/B 场景基准（根因命中率/幻觉率门禁）与 SSE 冒烟脚本（`make smoke-aiops`）。
 
+## 分层记忆系统
+
+RAG 会话的记忆分为短期与长期两层（实现见 `app/memory/`）：
+
+### 短期记忆（Redis）
+
+- 每个会话使用 `rag:s:{session_id}:` 前缀的 LIST（窗口消息）、STRING（滚动摘要）、
+  INCR（轮次号）三个 key，每轮 PIPELINE 滑动续期 TTL（默认 72h）。
+- 上下文 = 滚动摘要（SystemMessage）+ 最近窗口消息 + 当前问题，跨轮历史不再经
+  checkpoint 累积；每轮使用独立 `thread_id` 并在轮末释放 checkpoint。
+- 窗口达到 `MEMORY_WINDOW_MESSAGES` 触发压缩：锁保护下由摘要模型增量合并最旧
+  消息，仅保留最近 `MEMORY_COMPRESS_KEEP` 条原文。
+- **故障降级**：Redis 连接失败/超时触发实例级熔断（30s 冷却，半开探测恢复），
+  期间自动回退 checkpoint 路径，行为对调用方透明，恢复/降级均有 WARNING 日志。
+
+### 长期记忆（异构三路存储）
+
+每轮对话结束后，请求路径同步向 PostgreSQL Outbox（`rag_memory_jobs`）写入任务
+快照，后台 Worker（claim/lease/退避重试/dead，多实例安全）调用轻量模型
+（`MEMORY_EXTRACT_MODEL`）按严格 JSON 抽取并分类：
+
+| 记忆类型 | 存储 | 幂等锚点 | 召回方式 |
+| --- | --- | --- | --- |
+| 强事实 fact | PostgreSQL `rag_memory_facts` | `content_hash` 部分唯一索引 | 关键词/keywords 匹配 + 时间兜底 |
+| 半结构化 text | Elasticsearch `rag_memory` | doc `_id` = `content_hash` | BM25 按 user_id 过滤 |
+| 模糊语义 semantic | Milvus `rag_memory_vec` | 主键 = `content_hash` | 向量相似度 + 阈值过滤 |
+
+- 抽取规则：只保留持久信息（环境事实/偏好/已确认决策），confidence 低于
+  `MEMORY_EXTRACT_CONFIDENCE_MIN` 丢弃，命中敏感信息黑名单直接拒绝写入。
+- 同 subject 的新强事实会将旧记录置 `superseded`；subject 要求「实体-属性」
+  细粒度标签，避免无关事实互相覆盖。
+- 下一轮问答前三路并行召回，按优先级融合注入 system prompt：
+  `[长期记忆-强事实]`（声明必须遵守、不可被推翻）> `[长期记忆-相关经验]` >
+  `[语义联想-仅供参考]`，ES 与 Milvus 结果按 `content_hash` 去重。
+- 三路任一存储不可用均自动降级（跳过该路召回），Outbox 任务重试后仍失败则置
+  dead 并记录日志，不影响主问答链路。
+
 ## 配置
 
 完整模板见 `.env.example`，本地值写入 `.env`。`.env` 已被 Git 忽略，不应提交
@@ -219,9 +274,6 @@ API Key 或其他凭据。
 | `RAG_TEMPERATURE` | `0.1` | RAG 回答采样温度；低值减少随机扩展 |
 | `RAG_MAX_TOKENS` | `1200` | RAG 单次回答最大输出 Token 数 |
 | `RAG_ENABLE_THINKING` | `false` | 是否启用扩展思考；默认关闭以减少发散 |
-| `RAG_CONTEXT_SUMMARY_MODEL` | `qwen3.5-flash` | 滚动摘要模型，建议使用轻量模型 |
-| `RAG_CONTEXT_SUMMARY_TRIGGER_MESSAGES` | `12` | 累积到多少条消息后触发滚动摘要 |
-| `RAG_CONTEXT_SUMMARY_KEEP_MESSAGES` | `6` | 摘要后保留最近消息条数 |
 | `RAG_QUERY_REWRITE_MODEL` | 空 | 空值时复用 RAG 主模型 |
 | `EVAL_MODEL` | `qwen-max` | 离线评测模型 |
 | `EVAL_METRIC_TIMEOUT` | `90` | 普通指标和单次评测 HTTP 请求超时秒数 |
@@ -263,6 +315,29 @@ DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 
 只有本地 Elasticsearch 已安装 IK 插件时，才应将分词器改成
 `ik_max_word` 和 `ik_smart`。
+
+### 分层记忆（Redis / 抽取 / 三路召回）
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `REDIS_URL` | `redis://localhost:6379/0` | 短期记忆 Redis 地址 |
+| `REDIS_TIMEOUT` | `3` | Redis 连接/读写超时秒数 |
+| `MEMORY_ENABLED` | `true` | 是否启用分层记忆；关闭后完全回退 checkpoint 路径 |
+| `MEMORY_WINDOW_MESSAGES` | `12` | 短期记忆窗口消息条数，达到即触发摘要压缩 |
+| `MEMORY_COMPRESS_KEEP` | `6` | 压缩后保留的最近消息条数 |
+| `MEMORY_REDIS_TTL_SECONDS` | `259200` | 会话 key TTL（72h），每轮滑动续期 |
+| `MEMORY_EXTRACT_MODEL` | `qwen3.5-flash` | 长期记忆抽取分类模型 |
+| `MEMORY_EXTRACT_CONFIDENCE_MIN` | `0.6` | 抽取置信度低于该值丢弃 |
+| `MEMORY_EXTRACT_MAX_TOKENS` | `800` | 抽取模型最大输出 Token |
+| `MEMORY_FACTS_MAX` | `20` | 单轮召回注入的强事实上限 |
+| `MEMORY_ES_TOP_K` | `5` | ES 文本记忆召回条数 |
+| `MEMORY_VEC_TOP_K` | `5` | Milvus 语义记忆召回条数 |
+| `MEMORY_VEC_MIN_SCORE` | `0.6` | 语义召回相似度阈值 |
+| `ES_MEMORY_INDEX` | `rag_memory` | 长期记忆 ES 索引 |
+| `MILVUS_MEMORY_COLLECTION` | `rag_memory_vec` | 长期记忆 Milvus collection |
+| `MEMORY_WORKER_POLL_SECONDS` | `1` | 记忆 Worker 轮询间隔秒数 |
+| `MEMORY_WORKER_LEASE_SECONDS` | `300` | 记忆任务租约秒数 |
+| `MEMORY_WORKER_MAX_ATTEMPTS` | `8` | 记忆任务最大尝试次数，超限置 dead |
 
 ### 检索与 MCP
 
@@ -306,7 +381,7 @@ DASHSCOPE_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| `GET` | `/api/health` | 检查 PostgreSQL、Milvus Lite 和 Elasticsearch |
+| `GET` | `/api/health` | 检查 PostgreSQL、Milvus Lite 和 Elasticsearch（Redis 状态单独展示，不计入整体健康） |
 | `POST` | `/api/chat` | 普通 RAG 对话 |
 | `POST` | `/api/chat_stream` | SSE 流式 RAG 对话 |
 | `POST` | `/api/chat/clear` | 清空指定会话 |
@@ -419,6 +494,13 @@ Milvus Lite 测试会使用临时数据库，不依赖 Docker 或外部 Milvus S
 - `.pytest_cache/`、`.mypy_cache/`、`.ruff_cache/`、`htmlcov/`：开发工具产物。
 
 ## 常见问题
+
+### Redis 未启动 / 中途宕机
+
+短期记忆不依赖 Redis 启动：连不上时自动熔断降级到 checkpoint 路径，API 照常
+可用，日志出现 `短期记忆 Redis 故障，熔断 30s 降级到 checkpoint 路径` WARNING。
+降级期间的窗口消息不会回补，Redis 恢复后半开探测成功，从当前轮起重建窗口与
+摘要。长期记忆不受影响（Outbox 走 PostgreSQL）。
 
 ### Elasticsearch 连接失败
 
