@@ -4,7 +4,7 @@ SuperOpsAgent 是一个面向 On-Call 场景的智能运维助手。项目使用
 与 API 服务，通过 LangGraph 编排 RAG 问答和 AIOps 诊断流程，并结合 Milvus Lite、
 Elasticsearch、DashScope 和 MCP 完成知识检索、告警分析与诊断建议生成。
 
-AIOps 诊断采用**星型拓扑多 Agent 编排**：Supervisor 确定性中枢驱动假设鉴别诊断，
+AIOps 诊断采用**中心化多 Agent 编排**：Supervisor 确定性中枢驱动假设鉴别诊断，
 metrics/logs/knowledge 三域取证 Agent 并行取证，证据出处由代码从真实工具调用
 确定性构建，评审收敛后流式生成报告。编排状态经 LangGraph checkpoint 持久化到
 PostgreSQL，证据卡与 claim 落 append-only Evidence Store，全程可溯源。
