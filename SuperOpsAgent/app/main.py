@@ -17,6 +17,8 @@ from app.config import config
 from app.core.es_client import es_client_manager
 from app.core.milvus_client import milvus_manager
 from app.core.postgres import postgres_manager
+from app.memory.memory_writer import memory_write_worker
+from app.memory.redis_client import redis_client_manager
 from app.services.aiops_service import aiops_service
 from app.services.postgres_index_worker import postgres_index_worker
 from app.services.rerank_service import rerank_service
@@ -52,7 +54,17 @@ async def lifespan(app: FastAPI):
 
     logger.info("🔥 正在预热 Rerank 模型...")
     await rerank_service.warmup_async()
+
+    # Redis 短期记忆不可用时由 ShortTermMemory 熔断降级，不阻断启动
+    if config.memory_enabled:
+        logger.info("🔌 正在连接 Redis（短期记忆）...")
+        try:
+            await redis_client_manager.connect()
+        except Exception as exc:
+            logger.warning(f"⚠️ Redis 不可用，短期记忆将降级到 checkpoint 路径: {exc}")
+
     postgres_index_worker.start()
+    memory_write_worker.start()
 
     logger.info("=" * 60)
 
@@ -60,8 +72,11 @@ async def lifespan(app: FastAPI):
 
     # 关闭时执行
     postgres_index_worker.stop()
+    memory_write_worker.stop()
     logger.info("🔌 正在关闭 AIOps checkpoint 连接池...")
     await aiops_service.aclose()
+    logger.info("🔌 正在关闭 Redis 连接...")
+    await redis_client_manager.close()
     logger.info("🔌 正在关闭 Elasticsearch 连接...")
     await es_client_manager.close()
     logger.info("🔌 正在关闭 Milvus 连接...")

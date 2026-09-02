@@ -16,7 +16,28 @@ class QueryRewriteService:
             streaming=False,
         )
 
-    def _get_recent_history(self, session_id: str) -> list[dict[str, str]]:
+    async def _get_recent_history(self, session_id: str) -> list[dict[str, str]]:
+        rounds = config.rag_query_rewrite_history_rounds
+        if rounds <= 0:
+            return []
+
+        # 优先读 Redis 短期记忆窗口
+        try:
+            from app.memory.short_term import short_term_memory
+
+            if await short_term_memory.available():
+                window = await short_term_memory.history(session_id, limit=rounds * 2)
+                history = [
+                    {"role": item.get("role", "user"), "content": str(item.get("content", "")).strip()}
+                    for item in window
+                ]
+                history = [item for item in history if item["content"]]
+                if history:
+                    return history
+        except Exception as e:
+            logger.warning(f"查询重写读取 Redis 短期记忆失败: session_id={session_id}, error={e}")
+
+        # 降级：读 checkpoint 跨轮累积历史
         try:
             from app.services.rag_agent_service import rag_agent_service
 
@@ -57,9 +78,6 @@ class QueryRewriteService:
 
                 history.append({"role": role, "content": content})
 
-            rounds = config.rag_query_rewrite_history_rounds
-            if rounds <= 0:
-                return []
             return history[-(rounds * 2) :]
         except Exception as e:
             logger.warning(f"查询重写读取会话历史失败: session_id={session_id}, error={e}")
@@ -91,7 +109,7 @@ class QueryRewriteService:
         if not session_id:
             return original_query
 
-        history = self._get_recent_history(session_id)
+        history = await self._get_recent_history(session_id)
         prompt = self._build_rewrite_prompt(query, history)
 
         try:
