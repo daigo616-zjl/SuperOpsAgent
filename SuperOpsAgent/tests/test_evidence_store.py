@@ -15,9 +15,9 @@ from app.agent.aiops.diagnosis_models import (
     BudgetLedger,
     ClaimProvenance,
     Directive,
+    Elimination,
     EvidenceCard,
     EvidenceClaim,
-    Elimination,
     Hypothesis,
 )
 from app.core import postgres as postgres_module
@@ -144,7 +144,8 @@ def test_postgres_initialize_schema_executes_all_migrations(monkeypatch) -> None
 
     assert len(executed) == len(MIGRATIONS)
     assert "aiops_evidence_claims" in executed[1]
-    assert "rag_memory_facts" in executed[-1]
+    assert "rag_memory_facts" in executed[2]
+    assert "create table if not exists users" in executed[-1]
 
 
 def test_evidence_schema_defines_append_only_tables() -> None:

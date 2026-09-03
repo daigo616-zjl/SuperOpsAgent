@@ -11,13 +11,19 @@ class ChatRequest(BaseModel):
 
     id: str = Field(..., description="会话 ID", alias="Id")
     question: str = Field(..., description="用户问题", alias="Question")
+    user_id: str | None = Field(
+        default=None,
+        description="用户 ID（长期记忆主体）；缺省时以会话 ID 作为记忆主体",
+        alias="UserId",
+    )
 
     class Config:
         populate_by_name = True
         json_schema_extra = {
             "example": {
                 "Id": "session-123",
-                "Question": "什么是向量数据库？"
+                "Question": "什么是向量数据库？",
+                "UserId": "3f1c9a2e-0000-0000-0000-000000000000",
             }
         }
 

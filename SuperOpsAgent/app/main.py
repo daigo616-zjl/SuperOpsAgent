@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
-from app.api import aiops, chat, file, health
+from app.api import aiops, chat, file, health, users
 from app.config import config
 from app.core.es_client import es_client_manager
 from app.core.milvus_client import milvus_manager
@@ -117,6 +117,7 @@ async def disable_frontend_asset_cache(request: Request, call_next):
 # 注册路由
 app.include_router(health.router, prefix="/api", tags=["健康检查"])
 app.include_router(chat.router, prefix="/api", tags=["对话"])
+app.include_router(users.router, prefix="/api", tags=["用户"])
 app.include_router(file.router, prefix="/api", tags=["文件管理"])
 app.include_router(aiops.router, prefix="/api", tags=["AIOps智能运维"])
 

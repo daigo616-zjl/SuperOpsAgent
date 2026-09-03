@@ -24,7 +24,7 @@ def _model_returning(text: str) -> SimpleNamespace:
 async def test_extract_parses_valid_items(monkeypatch):
     extractor = MemoryExtractor()
     monkeypatch.setattr(
-        extractor, "_get_model",
+        extractor, "_new_model",
         lambda: _model_returning(
             '{"items":[{"type":"fact","content":"用户的服务是 data-sync-service",'
             '"subject":"服务","confidence":0.95},'
@@ -39,7 +39,7 @@ async def test_extract_parses_valid_items(monkeypatch):
 async def test_extract_strips_code_fence(monkeypatch):
     extractor = MemoryExtractor()
     monkeypatch.setattr(
-        extractor, "_get_model",
+        extractor, "_new_model",
         lambda: _model_returning('```json\n{"items":[{"type":"text","content":"方案A已确认","confidence":0.9}]}\n```'),
     )
     items = await extractor.extract("用方案A", "好的，已确认方案A")
@@ -49,7 +49,7 @@ async def test_extract_strips_code_fence(monkeypatch):
 async def test_extract_filters_invalid_low_confidence_and_sensitive(monkeypatch):
     extractor = MemoryExtractor()
     monkeypatch.setattr(
-        extractor, "_get_model",
+        extractor, "_new_model",
         lambda: _model_returning(
             '{"items":['
             '{"type":"unknown","content":"x","confidence":0.9},'
@@ -66,14 +66,32 @@ async def test_extract_filters_invalid_low_confidence_and_sensitive(monkeypatch)
 async def test_extract_garbage_output_returns_empty(monkeypatch):
     extractor = MemoryExtractor()
     monkeypatch.setattr(
-        extractor, "_get_model", lambda: _model_returning("抱歉我无法输出 JSON"),
+        extractor, "_new_model", lambda: _model_returning("抱歉我无法输出 JSON"),
     )
     assert await extractor.extract("q", "a") == []
 
 
+async def test_extract_prompt_includes_existing_subjects(monkeypatch):
+    extractor = MemoryExtractor()
+    captured: dict[str, str] = {}
+
+    async def ainvoke(prompt):
+        captured["prompt"] = prompt
+        return SimpleNamespace(content='{"items":[]}')
+
+    monkeypatch.setattr(extractor, "_new_model", lambda: SimpleNamespace(ainvoke=ainvoke))
+    await extractor.extract("q", "a", existing_facts=[("服务-order-service-部署地域", "服务 order-service 部署在华东2")])
+    assert "服务-order-service-部署地域" in captured["prompt"]
+    assert "原样复用" in captured["prompt"]
+
+    captured.clear()
+    await extractor.extract("q", "a")
+    assert "该用户已有的强事实" not in captured["prompt"]
+
+
 async def test_extract_empty_inputs_short_circuit(monkeypatch):
     extractor = MemoryExtractor()
-    monkeypatch.setattr(extractor, "_get_model", lambda: pytest.fail("不应调用模型"))
+    monkeypatch.setattr(extractor, "_new_model", lambda: pytest.fail("不应调用模型"))
     assert await extractor.extract("", "a") == []
     assert await extractor.extract("q", "") == []
 

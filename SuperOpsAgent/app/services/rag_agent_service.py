@@ -47,6 +47,7 @@ class _TurnContext:
     messages: list[Any]
     memory_mode: bool  # True: 短期记忆走 Redis；False: 降级走 checkpoint 跨轮累积
     summary: str = ""  # 本轮起点的滚动摘要（随 outbox 快照送长期记忆抽取）
+    user_id: str = ""  # 长期记忆主体（users 表注册 id；缺省为 session_id）
 
 
 def _document_sources(documents: list[Any]) -> list[str]:
@@ -175,11 +176,42 @@ class RagAgentService:
         self,
         question: str,
         session_id: str,
+        user_id: str | None = None,
     ) -> str:
-        result = await self.query_with_context(question=question, session_id=session_id)
+        result = await self.query_with_context(
+            question=question, session_id=session_id, user_id=user_id
+        )
         return result.answer
 
-    async def _start_turn(self, session_id: str, question: str) -> _TurnContext:
+    def _resolve_user_id(self, session_id: str, user_id: str | None) -> str:
+        """长期记忆主体：显式 user_id 须存在于 users 表，否则回退 session_id
+
+        请求侧错误（格式/不存在）抛 ValueError；基础设施故障原样抛出。
+        """
+        if not user_id or user_id == session_id:
+            return session_id
+        import uuid as _uuid
+
+        from sqlalchemy import text
+
+        from app.core.postgres import postgres_manager
+
+        try:
+            _uuid.UUID(user_id)
+        except ValueError:
+            raise ValueError(f"user_id 格式非法（须为 UUID）: {user_id}") from None
+        with postgres_manager.engine.connect() as connection:
+            exists = connection.execute(
+                text("select 1 from users where id = :user_id"),
+                {"user_id": _uuid.UUID(user_id)},
+            ).scalar()
+        if not exists:
+            raise ValueError(f"用户不存在: {user_id}")
+        return user_id
+
+    async def _start_turn(
+        self, session_id: str, question: str, user_id: str
+    ) -> _TurnContext:
         """开启一轮对话：优先 Redis 短期记忆组装上下文，不可用时降级 checkpoint 路径"""
         if await short_term_memory.available():
             seq = await short_term_memory.next_seq(session_id)
@@ -188,7 +220,7 @@ class RagAgentService:
                 system_content = self.system_prompt
                 try:
                     # 长期记忆三路召回，注入 system prompt（失败降级为无记忆块）
-                    memory_ctx = await memory_recall_service.recall(question, session_id)
+                    memory_ctx = await memory_recall_service.recall(question, user_id)
                     memory_block = memory_recall_service.format_prompt_block(memory_ctx)
                     if memory_block:
                         system_content = f"{self.system_prompt}\n\n{memory_block}"
@@ -208,13 +240,23 @@ class RagAgentService:
                     messages=messages,
                     memory_mode=True,
                     summary=summary,
+                    user_id=user_id,
                 )
 
-        # 降级路径：与旧行为一致，checkpoint 按原始 session_id 跨轮累积
+        # 降级路径：历史回退 checkpoint 跨轮累积，但长期记忆召回不依赖 Redis，照常注入
+        system_content = self.system_prompt
+        try:
+            memory_ctx = await memory_recall_service.recall(question, user_id)
+            memory_block = memory_recall_service.format_prompt_block(memory_ctx)
+            if memory_block:
+                system_content = f"{self.system_prompt}\n\n{memory_block}"
+        except Exception as e:
+            logger.warning(f"[会话 {session_id}] 长期记忆召回失败，跳过注入: {e}")
         return _TurnContext(
             thread_id=session_id,
-            messages=[SystemMessage(content=self.system_prompt), HumanMessage(content=question)],
+            messages=[SystemMessage(content=system_content), HumanMessage(content=question)],
             memory_mode=False,
+            user_id=user_id,
         )
 
     async def _finish_turn(self, turn: _TurnContext, session_id: str, answer: str) -> None:
@@ -232,13 +274,14 @@ class RagAgentService:
 
         # 长期记忆走 PG outbox，Redis 降级时同样入队
         memory_write_worker.enqueue_turn(
-            session_id, session_id, question, answer, summary=turn.summary,
+            session_id, turn.user_id, question, answer, summary=turn.summary,
         )
 
     async def query_with_context(
         self,
         question: str,
         session_id: str,
+        user_id: str | None = None,
     ) -> RagQueryWithContextResult:
         """
         非流式处理用户问题（一次性返回完整答案与真实检索上下文）
@@ -252,11 +295,12 @@ class RagAgentService:
         """
         clear_captured_retrieval_trace(session_id)
         try:
+            resolved_user_id = self._resolve_user_id(session_id, user_id)
             await self._initialize_agent()
 
             logger.info(f"[会话 {session_id}] RAG Agent 收到查询（非流式）: {question}")
 
-            turn = await self._start_turn(session_id, question)
+            turn = await self._start_turn(session_id, question, resolved_user_id)
             agent_input = {"messages": turn.messages}
             config_dict = {"configurable": {"thread_id": turn.thread_id}}
 
@@ -320,6 +364,7 @@ class RagAgentService:
         self,
         question: str,
         session_id: str,
+        user_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
         流式处理用户问题（逐步返回答案片段）
@@ -338,7 +383,8 @@ class RagAgentService:
 
             logger.info(f"[会话 {session_id}] RAG Agent 收到查询（流式）: {question}")
 
-            turn = await self._start_turn(session_id, question)
+            resolved_user_id = self._resolve_user_id(session_id, user_id)
+            turn = await self._start_turn(session_id, question, resolved_user_id)
 
             # 构建 Agent 输入
             agent_input = {"messages": turn.messages}
@@ -378,6 +424,11 @@ class RagAgentService:
             await self._finish_turn(turn, session_id, "".join(answer_parts))
             yield {"type": "complete"}
 
+        except ValueError as e:
+            # 请求侧错误（user_id 非法/不存在）明确回报，不伪装成模型故障
+            logger.warning(f"[会话 {session_id}] 流式查询请求侧错误: {e}")
+            yield {"type": "error", "data": str(e)}
+            yield {"type": "complete"}
         except Exception as e:
             logger.error(f"[会话 {session_id}] RAG Agent 查询失败（流式）: {e}")
             yield {"type": "content", "data": "当前模型服务暂时不可用，请稍后重试。"}

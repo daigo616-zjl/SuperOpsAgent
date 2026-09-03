@@ -1,0 +1,99 @@
+{
+  "description": "多用户分层记忆评测集：跨会话召回 / 用户隔离 / 语义改写召回 / 事实更正 supersede。flow 顺序即执行顺序。",
+  "users": [
+    {"key": "ops_a", "display_name": "运维-张"},
+    {"key": "ops_b", "display_name": "运维-李"},
+    {"key": "cold_c", "display_name": "访客"}
+  ],
+  "flows": [
+    {
+      "name": "A1 写入部署/规约/偏好事实",
+      "user": "ops_a",
+      "session": "a-seed",
+      "turns": [
+        "我们订单服务 order-service 部署在华东2，数据库用的是 PostgreSQL 15。",
+        "我们组的告警处理规约：P3 告警 30 分钟内响应，P1 告警要立即电话上报告警值班群。",
+        "我们支付网关 pay-gateway 的域名是 pay.example-inc.com，走的是银联通道。"
+      ]
+    },
+    {
+      "name": "A2 更正部署事实（触发 supersede）",
+      "user": "ops_a",
+      "session": "a-correct",
+      "turns": [
+        "更正一下部署信息：order-service 上周已经迁移到华南1了，数据库也升级到了 PostgreSQL 16。"
+      ]
+    },
+    {
+      "name": "A3 跨会话精确召回（新 session 问部署）",
+      "user": "ops_a",
+      "session": "a-probe-fact",
+      "probes": [
+        {
+          "question": "order-service 现在部署在哪个区域？数据库是什么版本？",
+          "expect_all": ["华南1", "PostgreSQL 16"],
+          "excludes_all": ["华东2", "PostgreSQL 15"]
+        }
+      ]
+    },
+    {
+      "name": "A4 语义改写召回（口语化指代）",
+      "user": "ops_a",
+      "session": "a-probe-semantic",
+      "probes": [
+        {
+          "question": "我们那个管订单的系统装在哪来着？",
+          "expect_any": ["华南1"]
+        },
+        {
+          "question": "上次说的告警响应时限是多少来着？",
+          "expect_any": ["30", "三十"]
+        }
+      ]
+    },
+    {
+      "name": "B1 用户隔离：李不得召回张的事实",
+      "user": "ops_b",
+      "session": "b-isolation",
+      "probes": [
+        {
+          "question": "order-service 部署在哪个区域？",
+          "excludes_all": ["华东2", "华南1"]
+        },
+        {
+          "question": "pay-gateway 的域名是什么？",
+          "excludes_all": ["pay.example-inc.com"]
+        }
+      ]
+    },
+    {
+      "name": "C1 冷启动：无任何记忆可用",
+      "user": "cold_c",
+      "session": "c-cold",
+      "probes": [
+        {
+          "question": "order-service 部署在哪个区域？",
+          "excludes_all": ["华东2", "华南1"]
+        }
+      ]
+    }
+  ],
+  "db_checks": [
+    {
+      "name": "张的旧部署事实已被 supersede",
+      "type": "superseded",
+      "user": "ops_a",
+      "content_like": "华东2"
+    },
+    {
+      "name": "李名下没有任何事实",
+      "type": "no_rows",
+      "user": "ops_b"
+    },
+    {
+      "name": "访客名下没有任何事实",
+      "type": "no_rows",
+      "user": "cold_c"
+    }
+  ]
+}

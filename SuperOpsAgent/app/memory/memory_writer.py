@@ -125,14 +125,23 @@ class MemoryWriter:
         try:
             import asyncio
 
+            # 传入已有 active 事实的 subject 词表，让抽取器为同属性
+            # 复用同一 subject，保证 supersede 覆盖能命中
+            user_id = str(job["user_id"])
+            existing = [
+                (hit.subject, hit.content)
+                for hit in long_term_repository.recent_facts(user_id, limit=20)
+                if hit.subject
+            ]
             items = asyncio.run(
                 memory_extractor.extract(
                     str(job["user_message"]),
                     str(job["assistant_message"]),
                     str(job["summary"] or ""),
+                    existing_facts=existing,
                 )
             )
-            self._route_items(str(job["user_id"]), items)
+            self._route_items(user_id, items)
             with postgres_manager.engine.begin() as connection:
                 connection.execute(text("""
                     update rag_memory_jobs

@@ -39,7 +39,8 @@ async def chat(request: ChatRequest):
         logger.info(f"[会话 {request.id}] 收到快速对话请求: {request.question}")
         answer = await rag_agent_service.query(
             request.question,
-            session_id=request.id
+            session_id=request.id,
+            user_id=request.user_id,
         )
 
         logger.info(f"[会话 {request.id}] 快速对话完成")
@@ -54,6 +55,17 @@ async def chat(request: ChatRequest):
             }
         }
 
+    except ValueError as e:
+        # user_id 不存在等请求侧错误，映射为 400
+        return {
+            "code": 400,
+            "message": "error",
+            "data": {
+                "success": False,
+                "answer": None,
+                "errorMessage": str(e)
+            }
+        }
     except Exception as e:
         logger.error(f"对话接口错误: {e}")
         return {
@@ -95,7 +107,9 @@ async def chat_stream(request: ChatRequest):
 
     async def event_generator():
         try:
-            async for chunk in rag_agent_service.query_stream(request.question, session_id=request.id):
+            async for chunk in rag_agent_service.query_stream(
+                request.question, session_id=request.id, user_id=request.user_id
+            ):
                 chunk_type = chunk.get("type", "unknown")
                 chunk_data = chunk.get("data", None)
 

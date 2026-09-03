@@ -17,33 +17,47 @@ SENSITIVE_PATTERNS = (
 
 
 class MemoryExtractor:
-    def __init__(self) -> None:
-        self._model: Any | None = None
+    def _new_model(self):
+        """每次抽取新建模型实例：worker 在短命 event loop 中运行，
+        共享实例会把 SDK 层的 loop 绑定状态带进已关闭的 loop"""
+        from app.core.llm_factory import LLMFactory
 
-    def _get_model(self):
-        if self._model is None:
-            from app.core.llm_factory import LLMFactory
-
-            self._model = LLMFactory.create_qwen_chat_model(
-                model=config.memory_extract_model,
-                temperature=0,
-                streaming=False,
-                max_tokens=config.memory_extract_max_tokens,
-                enable_thinking=False,
-            )
-        return self._model
+        return LLMFactory.create_qwen_chat_model(
+            model=config.memory_extract_model,
+            temperature=0,
+            streaming=False,
+            max_tokens=config.memory_extract_max_tokens,
+            enable_thinking=False,
+        )
 
     @staticmethod
-    def _prompt(user_msg: str, assistant_msg: str, summary: str) -> str:
+    def _prompt(
+        user_msg: str,
+        assistant_msg: str,
+        summary: str,
+        existing_facts: list[tuple[str, str]] | None = None,
+    ) -> str:
+        existing_section = ""
+        if existing_facts:
+            lines = "\n".join(f"- {subject}: {content}" for subject, content in existing_facts)
+            existing_section = (
+                "该用户已有的强事实（subject: content）:\n"
+                f"{lines}\n\n"
+                "若新事实描述的是已有某条事实的同一实体同一属性（即使表述不同），"
+                "必须原样复用那条事实的 subject——新事实会覆盖旧事实；"
+                "只有全新属性才新建「实体-属性」subject。\n\n"
+            )
         return (
             "你在从一轮对话中抽取值得长期记住的信息。\n"
             "只抽取持久信息：环境事实（服务名/IP/阈值/配置/归属关系）、用户偏好与约束、"
             "已确认的决策与结论。\n"
             "禁止抽取：瞬时问答内容、寒暄、当前时间状态、任何凭证或敏感信息。\n"
-            "每条记忆必须是原子单句，content 可独立理解。\n"
+            "每条记忆必须是原子单句，content 可独立理解，"
+            "一条只描述一个属性（如部署区域和数据库版本要拆成两条）。\n"
             "subject 必须是「实体-属性」形式的细粒度标签（如 用户-姓名、用户-职业、"
             "服务-部署位置、系统-备份策略），禁止使用「用户」这类宽泛主语——"
             "同 subject 的新事实会覆盖旧事实，粒度不够细会导致无关记忆互相顶掉。\n"
+            f"{existing_section}"
             "分类规则：\n"
             "- fact：可独立验证的确定性事实（如'用户的服务 data-sync-service 部署在华东1'），"
             "必须能在对话原文中找到依据\n"
@@ -71,13 +85,19 @@ class MemoryExtractor:
         return parsed if isinstance(parsed, dict) else None
 
     async def extract(
-        self, user_msg: str, assistant_msg: str, summary: str = "",
+        self,
+        user_msg: str,
+        assistant_msg: str,
+        summary: str = "",
+        existing_facts: list[tuple[str, str]] | None = None,
     ) -> list[ExtractedItem]:
         if not user_msg.strip() or not assistant_msg.strip():
             return []
 
-        model = self._get_model()
-        response = await model.ainvoke(self._prompt(user_msg, assistant_msg, summary))
+        model = self._new_model()
+        response = await model.ainvoke(
+            self._prompt(user_msg, assistant_msg, summary, existing_facts)
+        )
         raw = response.content if hasattr(response, "content") else response
         if isinstance(raw, list):
             raw = " ".join(
